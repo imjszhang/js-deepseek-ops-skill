@@ -34,7 +34,6 @@ const CLI_COMMANDS = [
   { name: 'rename-session', description: '[DESTRUCTIVE] 重命名会话标题' },
   { name: 'pin-session', description: '[DESTRUCTIVE] 置顶会话' },
   { name: 'unpin-session', description: '[DESTRUCTIVE] 取消置顶会话' },
-  { name: 'delete-session', description: '[DESTRUCTIVE,IRREVERSIBLE] 删除会话（自动备份）' },
   { name: 'feedback-message', description: '[DESTRUCTIVE] 对单条消息发反馈（赞/踩/取消）' },
   { name: 'stop-stream', description: '[DESTRUCTIVE] 停止当前流式生成' },
   { name: 'send-message', description: '[DESTRUCTIVE,COST] 发消息触发流式生成（含 PoW）' },
@@ -174,21 +173,10 @@ function makeNavigateToolExecutor({ pageKey, method, toolName }) {
   };
 }
 
-/**
- * prefetchSessionBackup - delete_session 前先调 home/chat bridge 的 getSessionSnapshot
- * 拿当前会话快照（标题 / 消息元数据 / 每条 sha256+length），用于 lib/audit.writeBackup。
- */
-async function prefetchSessionBackup(session, args) {
-  try {
-    const snap = await session.callApi('getSessionSnapshot', [{ sessionId: args.sessionId }], { timeoutMs: 30000 });
-    if (snap && snap.ok && snap.data) {
-      return { resource: 'session', id: args.sessionId, snapshot: snap.data };
-    }
-    return { resource: 'session', id: args.sessionId, snapshot: { unavailable: true, error: snap && snap.error } };
-  } catch (e) {
-    return { resource: 'session', id: args.sessionId, snapshot: { unavailable: true, message: String(e && e.message) } };
-  }
-}
+// 注：v0.3.3 移除 delete_session 工具与 prefetchSessionBackup helper —
+// 删除会话被认定为高危且无可逆补偿（即便 backup 也无法恢复 server-side
+// 真实数据）。如需清理测试数据，请走 DeepSeek 官方 UI 手动删除。
+// `getSessionSnapshot` bridge 方法保留供未来 export 等读路径复用。
 
 const TOOL_DEFINITIONS = [
   // ===== READ =====
@@ -416,15 +404,8 @@ const TOOL_DEFINITIONS = [
     pageKey: 'home', method: 'unpinSession',
     execute: makeDestructiveExecutor({ toolName: 'deepseek_unpin_session', pageKey: 'home', method: 'unpinSession', sideEffect: 'reversible', buildTargetUrl: () => null }),
   },
-  {
-    name: 'deepseek_delete_session',
-    label: 'DeepSeek Ops: Delete Session',
-    description: '[DESTRUCTIVE,IRREVERSIBLE] 删除会话；调用前自动写 backup 到 ~/.js-eyes/skill-records/<skill>/backups/',
-    parameters: { type: 'object', properties: { sessionId: { type: 'string' } }, required: ['sessionId'] },
-    optional: true, interactive: false, destructive: true, sideEffect: 'irreversible',
-    pageKey: 'home', method: 'deleteSession',
-    execute: makeDestructiveExecutor({ toolName: 'deepseek_delete_session', pageKey: 'home', method: 'deleteSession', sideEffect: 'irreversible', buildTargetUrl: () => null, prefetchBackup: prefetchSessionBackup }),
-  },
+  // 注：v0.3.3 移除 deepseek_delete_session（删除会话不可逆且服务端真实数据
+  // 无法通过本地 backup 恢复）；如需清理，请走 DeepSeek 官方 UI 操作。
 
   // ===== DESTRUCTIVE: 消息反馈 / 停流 =====
   {

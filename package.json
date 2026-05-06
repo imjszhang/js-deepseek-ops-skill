@@ -1,7 +1,7 @@
 {
   "name": "js-deepseek-ops-skill",
-  "version": "0.3.2",
-  "description": "DeepSeek Chat 全量自动化技能：READ + INTERACTIVE + DESTRUCTIVE 三档（v0.3.2：DOM byMessageId 解锁虚拟化历史消息）",
+  "version": "0.3.3",
+  "description": "DeepSeek Chat 全量自动化技能：READ + INTERACTIVE + DESTRUCTIVE 三档（v0.3.3：移除 delete_session）",
   "private": true,
   "main": "index.js",
   "scripts": {
@@ -26,7 +26,6 @@
     "rename-session": "node index.js rename-session",
     "pin-session": "node index.js pin-session",
     "unpin-session": "node index.js unpin-session",
-    "delete-session": "node index.js delete-session",
     "feedback-message": "node index.js feedback-message",
     "stop-stream": "node index.js stop-stream",
     "send-message": "node index.js send-message",

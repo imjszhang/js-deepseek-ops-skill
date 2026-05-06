@@ -14,7 +14,6 @@
 //     createSession                      reversible
 //     renameSession                      reversible
 //     pinSession / unpinSession          reversible
-//     deleteSession                      irreversible（需 Node 端先 backup）
 //     feedbackMessage                    reversible
 //     stopStream                         reversible（终止当前流）
 //     sendMessage                        cost（消耗 token，PoW 自动完成）
@@ -39,7 +38,7 @@
 
 (function install() {
   'use strict';
-  const VERSION = '0.3.12';
+  const VERSION = '0.3.13';
 
   // @@include ./common.js
 
@@ -337,16 +336,8 @@
     return okResult({ sessionId: sid, pinned: !!pinned, raw: u.biz, sourceUrl: resp.url, timestamp: new Date().toISOString() });
   }
 
-  async function deleteSession(args) {
-    args = args || {};
-    const sid = args.sessionId;
-    if (!sid) return errResult('missing_session_id');
-    const body = { chat_session_id: String(sid) };
-    const resp = await fetchDeepseekJson('/api/v0/chat_session/delete', { method: 'POST', body, textLimit: 600 });
-    const u = unwrapDeepseekResponse(resp);
-    if (!u.ok) return errResult(u.error || 'fetch_failed', { httpStatus: resp.httpStatus, bizCode: u.bizCode, bizMsg: u.bizMsg });
-    return okResult({ sessionId: sid, deleted: true, raw: u.biz, sourceUrl: resp.url, timestamp: new Date().toISOString() });
-  }
+  // 注：v0.3.3 移除 deleteSession（删除会话不可逆）；端点 /api/v0/chat_session/delete
+  // 仍存在于 DeepSeek，bridge 端不再封装，避免被误调用。
 
   async function feedbackMessage(args) {
     args = args || {};
@@ -1324,7 +1315,7 @@
     // INTERACTIVE
     navigateHome, navigateNewChat, navigateSession,
     // DESTRUCTIVE
-    createSession, renameSession, pinSession, unpinSession, deleteSession,
+    createSession, renameSession, pinSession, unpinSession,
     feedbackMessage, stopStream,
     sendMessage, editMessage, regenerateMessage,
     domSendMessage, domEditMessage, domRegenerateMessage, domStopStream,

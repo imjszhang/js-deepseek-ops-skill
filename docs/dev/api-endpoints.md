@@ -48,7 +48,7 @@
 | DESTRUCTIVE,reversible | `/api/v0/share/create` | POST `{chat_session_id, title?, message_ids?}` | 创建分享 | `share_session` |
 | DESTRUCTIVE,reversible | `/api/v0/file/upload_file` | POST multipart | 上传文件 | `upload_file` |
 | DESTRUCTIVE,reversible | `/api/v0/users/update_settings` | POST `{...}` | 更新账号设置 | `update_user_settings` |
-| **DESTRUCTIVE,irreversible** | `/api/v0/chat_session/delete` | POST `{chat_session_id}` | 删除会话（auto-backup） | `delete_session` |
+| DESTRUCTIVE,irreversible | `/api/v0/chat_session/delete` | POST `{chat_session_id}` | 删除会话 | （**v0.3.3 起永不实现**：不可逆且 backup 无法恢复服务端真实数据） |
 | DESTRUCTIVE,irreversible | `/api/v0/chat_session/delete_all` | POST | 删除所有会话 | （**永不实现**） |
 | DESTRUCTIVE,irreversible | `/api/v0/share/delete` | POST `{share_id}` | 删除分享 | `unshare_session` |
 | **DESTRUCTIVE,cost** | `/api/v0/chat/completion` | POST → SSE | 发消息（PoW 必需） | `send_message` |
@@ -107,8 +107,10 @@
 ### `/api/v0/chat_session/delete` (POST)
 
 `{chat_session_id}`。空会话也可删；`biz_data` 为 `null`。
-**irreversible**：本 skill 调用前自动 `getSessionSnapshot` 写 backup 到
-`~/.js-eyes/skill-records/<skill>/backups/session-<sid>-<ts>.json`。
+**v0.3.3 起本 skill 不再封装此端点**：删除会话是真正不可逆的操作，本地
+`getSessionSnapshot` backup 只能记录元数据 + content hash，无法还原服务端
+真实数据；为避免误调用，已从 contract / CLI / bridge 中整体下线。如需清理，
+请在 DeepSeek Web UI 手动操作。
 
 ### `/api/v0/chat/message_feedback` (POST)
 
@@ -243,4 +245,5 @@ LLM 自负责传合法 key。
 3. 对未知 schema：bridge 端 `session.callRaw` 直接 `fetch(POST)` 试不同字段名 / 值，
    看 422 `{detail:[{loc:"body.<field>"}]}` 反推
 
-DESTRUCTIVE 测试纪律：**只在专属 TEST_SID 内做**，结束 `delete_session` 收尾。
+DESTRUCTIVE 测试纪律：**只在专属 TEST_SID 内做**；测试结束后请在 DeepSeek
+Web UI 手动删除测试会话（v0.3.3 起 skill 不再提供 `delete_session` 工具）。

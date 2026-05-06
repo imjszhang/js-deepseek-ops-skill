@@ -1,6 +1,6 @@
 ---
 name: js-deepseek-ops-skill
-description: DeepSeek Chat 全量自动化 skill：READ + INTERACTIVE + DESTRUCTIVE 三档；登录态 / 历史会话 / 单会话历史 / chat 页深度只读 + 创建/重命名/置顶/删除会话 / 反馈 / 上传 / 分享 / 账号设置 / 发消息（SSE + PoW，骨架已就绪）。所有 destructive 调用强制写 audit.jsonl，irreversible 调用前自动 backup。
+description: DeepSeek Chat 全量自动化 skill：READ + INTERACTIVE + DESTRUCTIVE 三档；登录态 / 历史会话 / 单会话历史 / chat 页深度只读 + 创建/重命名/置顶 / 反馈 / 上传 / 分享 / 账号设置 / DOM 模式发/编辑/重生消息（绕开 PoW）。所有 destructive 调用强制写 audit.jsonl，irreversible 调用前自动 backup。**v0.3.3 起不再暴露删除会话工具**（不可逆且无可靠补偿，请走官方 UI）。
 version: 0.3.0
 metadata:
   openclaw:
@@ -22,7 +22,7 @@ metadata:
 **v0.3 BREAKING — 安全姿态反转**：从只读 skill 升级为**完整 ops** skill。
 - v0.2 之前的"明确不做的事"段已废弃；DESTRUCTIVE 工具（发消息 / 删会话 / 改设置 / 上传 / 分享）全部启用
 - 不再做调用前 confirm；改为 **audit 模式**：destructive 调用直接执行，但完整请求体 + 响应强制写入 `~/.js-eyes/skill-records/<skill>/audit/audit.jsonl`
-- `delete_session` / `unshare_session` 等真正不可逆操作前自动写 backup 到 `~/.js-eyes/skill-records/<skill>/backups/<resource>-<id>-<ts>.json`
+- `unshare_session` 等真正不可逆操作前自动写 backup 到 `~/.js-eyes/skill-records/<skill>/backups/<resource>-<id>-<ts>.json`（v0.3.3 起删除会话工具已下线）
 - 这是**会改用户真实数据**的 skill；建议测试只在专用 TEST_SID 内做
 
 ## 依赖与前置
@@ -92,14 +92,13 @@ metadata:
 | `deepseek_navigate_session` | 导航到 /a/chat/s/\<id\> |
 | `deepseek_navigate_new_chat` | 导航到 / 起新对话（不创建 sessionId） |
 
-### DESTRUCTIVE（15 个）
+### DESTRUCTIVE（14 个）
 
 | 工具 | sideEffect | 说明 |
 |---|---|---|
 | `deepseek_create_session` | reversible | 创建新会话；返回 sessionId |
 | `deepseek_rename_session` | reversible | 重命名会话标题 |
 | `deepseek_pin_session` / `deepseek_unpin_session` | reversible | 置顶 / 取消 |
-| `deepseek_delete_session` | **irreversible** | 删会话；auto-backup |
 | `deepseek_feedback_message` | reversible | 消息反馈（GOOD / BAD / null） |
 | `deepseek_stop_stream` | reversible | 停止当前流式生成 |
 | `deepseek_send_message` | **cost** | 发消息（PoW 必需，**bridge 不实现 wasm solver，会回 `pow_required`** — 改用下面 DOM 版） |
@@ -149,9 +148,6 @@ node index.js pin-session <sid>
 node index.js feedback-message <sid> 12 1         # 1=GOOD, -1=BAD, 0=取消
 node index.js share-session <sid> --title "..."
 
-# DESTRUCTIVE（irreversible，auto-backup）
-node index.js delete-session <sid>                # backups/session-<sid>-<ts>.json
-
 # DESTRUCTIVE（cost，PoW 当前会失败回 pow_required）
 node index.js send-message <sid> "ping"
 node index.js edit-message <sid> 5 "改后内容"
@@ -190,7 +186,7 @@ node index.js xhr-log --filter "/api/v0/" --limit 200
 │
 ├─ bridges/
 │   ├─ common.js            ← 共享 helpers（fetchDeepseekJson POST/GET / digestText / readDeviceId / ...）
-│   ├─ home-bridge.js       ← v0.3.2 — home 页 + DESTRUCTIVE 子集（create/rename/pin/delete/share/...）
+│   ├─ home-bridge.js       ← v0.3.4 — home 页 + DESTRUCTIVE 子集（create/rename/pin/share/...，已移除 delete）
 │   └─ chat-bridge.js       ← v0.3.4 — chat 页全集（含 SSE / PoW solvePowChallenge）
 │
 └─ cli/index.js             ← runDestructiveCommand / runExportSessionLocal 等

@@ -6,7 +6,7 @@
 //   READ: probe / state / sessionState / listSessions
 //   INTERACTIVE: navigateHome / navigateNewChat / navigateSession
 //   DESTRUCTIVE: createSession / renameSession / pinSession / unpinSession /
-//                deleteSession / shareSession / unshareSession / listShares /
+//                shareSession / unshareSession / listShares /
 //                updateUserSettings
 //
 // home 与 chat bridge 共用大部分 destructive 实现（端点不依赖当前 URL）；
@@ -17,7 +17,7 @@
 
 (function install() {
   'use strict';
-  const VERSION = '0.3.3';
+  const VERSION = '0.3.4';
 
   // @@include ./common.js
 
@@ -119,16 +119,7 @@
     return okResult({ sessionId: sid, pinned: !!pinned, raw: u.biz, sourceUrl: resp.url, timestamp: new Date().toISOString() });
   }
 
-  async function deleteSession(args) {
-    args = args || {};
-    const sid = args.sessionId;
-    if (!sid) return errResult('missing_session_id');
-    const body = { chat_session_id: String(sid) };
-    const resp = await fetchDeepseekJson('/api/v0/chat_session/delete', { method: 'POST', body, textLimit: 600 });
-    const u = unwrapDeepseekResponse(resp);
-    if (!u.ok) return errResult(u.error || 'fetch_failed', { httpStatus: resp.httpStatus, bizCode: u.bizCode, bizMsg: u.bizMsg });
-    return okResult({ sessionId: sid, deleted: true, raw: u.biz, sourceUrl: resp.url, timestamp: new Date().toISOString() });
-  }
+  // 注：v0.3.3 移除 deleteSession（不可逆操作；端点仍存在但 bridge 不再封装）
 
   async function getSessionSnapshot(args) {
     // 与 chat-bridge 同名实现保持一致，便于 home 端 prefetchBackup 在不切 tab 的情况下取快照
@@ -279,7 +270,7 @@
     __meta: { version: VERSION, name: 'home-bridge' },
     probe, state, sessionState, listSessions,
     navigateHome, navigateNewChat, navigateSession,
-    createSession, renameSession, pinSession, unpinSession, deleteSession,
+    createSession, renameSession, pinSession, unpinSession,
     getSessionSnapshot,
     domSendMessage, domStopStream,
     shareSession, unshareSession, listShares,

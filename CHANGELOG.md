@@ -2,6 +2,27 @@
 
 本仓库的版本历史与根因索引。SKILL.md 只保留前向规划，所有"已发生"的变更与事故复盘都迁到这里。
 
+## v0.3.3 — 下线 delete_session（2026-05-07）
+
+按用户要求移除"删除会话"工具。删除会话是真正不可逆操作，本地
+`getSessionSnapshot` backup 只能记录元数据 + content hash，无法还原服务端
+真实数据，"自动 backup"给出的安全感是虚的。为避免被 LLM 在多步任务中
+误调用，整体下线，不再保留 dry-run 入口。如需清理测试会话，请走 DeepSeek
+官方 Web UI 手动删除。
+
+### 移除项
+
+- contract：`deepseek_delete_session` 工具定义 + `prefetchSessionBackup` helper
+- CLI：`delete-session` 命令、`--help` 示例、`package.json` script
+- bridge：`bridges/chat-bridge.js` `deleteSession`（VERSION → 0.3.13）、`bridges/home-bridge.js` `deleteSession`（VERSION → 0.3.4）
+- 文档：`SKILL.md` DESTRUCTIVE 工具计数 15 → 14、`docs/dev/api-endpoints.md` 把 `/api/v0/chat_session/delete` 标为"永不实现"
+
+### 保留项
+
+- `getSessionSnapshot` bridge 方法（chat + home）保留，未来 export / 备份场景仍可复用
+- `lib/audit.js` 的 backup 写盘能力保留，仍服务于 `unshare_session` 等其它 irreversible 工具
+- 端点本身在 DeepSeek 服务端依然存在，本仓库只是不再封装
+
 ## v0.3.2 — DOM 模式 byMessageId（解锁虚拟化历史消息）
 
 v0.3.1 的 `dom_edit_message` / `dom_regenerate_message` 仅支持 `lastUser` / `lastAssistant`，因 `.ds-virtual-list` 离屏剔除 + DeepSeek 无 `data-message-id` 锚点。本版补齐 `target=byMessageId` 支持，可对会话内任意消息（含远 offscreen 历史）操作。
