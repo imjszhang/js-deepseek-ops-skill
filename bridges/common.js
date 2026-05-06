@@ -530,12 +530,13 @@ function setReactInputValue(el, value) {
  */
 function findComposerSendButton(ta) {
   const taBottom = ta && ta.getBoundingClientRect ? ta.getBoundingClientRect().bottom : 400;
-  const btns = Array.from(document.querySelectorAll('button.ds-icon-button--l, [role="button"].ds-icon-button--l'));
+  // 兼容 <button> 与 <div role="button"> 与无 role 纯 div.ds-icon-button（实测三种都出现过）
+  const btns = Array.from(document.querySelectorAll('.ds-icon-button--l'));
   const cands = btns
-    .filter((b) => !b.disabled && b.getAttribute('aria-disabled') !== 'true')
+    .filter((b) => !b.disabled && b.getAttribute('aria-disabled') !== 'true' && !b.classList.contains('ds-icon-button--disabled'))
     .filter((b) => {
       const r = b.getBoundingClientRect();
-      return r.y >= taBottom - 50; // 允许 50px 滑动空间
+      return r.width > 0 && r.height > 0 && r.y >= taBottom - 50;
     });
   if (!cands.length) return null;
   cands.sort((a, b) => b.getBoundingClientRect().x - a.getBoundingClientRect().x);
@@ -549,7 +550,60 @@ function findComposerSendButton(ta) {
  * 调用方需自己判断当前是否在流式（streamingStatus）。
  */
 function findComposerStopButton(ta) {
-  return findComposerSendButton(ta);
+  const taBottom = ta && ta.getBoundingClientRect ? ta.getBoundingClientRect().bottom : 400;
+  const btns = Array.from(document.querySelectorAll('.ds-icon-button--l'));
+  const cands = btns.filter((b) => {
+    if (b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
+    const r = b.getBoundingClientRect();
+    return r.width > 0 && r.y >= taBottom - 50;
+  });
+  if (!cands.length) return null;
+  cands.sort((a, b) => b.getBoundingClientRect().x - a.getBoundingClientRect().x);
+  return cands[0];
+}
+
+/**
+ * findMessageActionRows - 把 chat 历史里所有 `.ds-icon-button--m`（消息行 action 按钮）
+ * 按 y 坐标聚类成"行"，用按钮数量启发式判定 USER vs ASSISTANT：
+ *   - USER 行通常 2 个按钮：[复制, 编辑]
+ *   - ASSISTANT 行通常 5 个按钮：[复制, 重新生成, 喜欢, 不喜欢, 分享]
+ * 行按 y 升序 = chat 时序。返回 [{y, role, buttons}]。
+ *
+ * 已知限制：DeepSeek 用 ds-virtual-list 虚拟化历史，离屏消息没有按钮 DOM；
+ * 若需操作历史早期消息须先滚动到目标位置（暂未在 bridge 内自动 scroll）。
+ *
+ * @returns {Array<{y:number, role:'USER'|'ASSISTANT'|'UNKNOWN', buttons:HTMLElement[]}>}
+ */
+function findMessageActionRows() {
+  const all = Array.from(document.querySelectorAll('.ds-icon-button--m'))
+    .filter((b) => {
+      const r = b.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    });
+  if (!all.length) return [];
+  all.sort((a, b) => {
+    const ay = a.getBoundingClientRect().y;
+    const by = b.getBoundingClientRect().y;
+    if (Math.abs(ay - by) > 8) return ay - by;
+    return a.getBoundingClientRect().x - b.getBoundingClientRect().x;
+  });
+  const rows = [];
+  let cur = null;
+  for (const b of all) {
+    const y = b.getBoundingClientRect().y;
+    if (!cur || Math.abs(y - cur.y) > 8) {
+      cur = { y, buttons: [] };
+      rows.push(cur);
+    }
+    cur.buttons.push(b);
+  }
+  return rows.map((r) => {
+    const n = r.buttons.length;
+    let role = 'UNKNOWN';
+    if (n === 2) role = 'USER';
+    else if (n >= 4) role = 'ASSISTANT'; // 容差：4-6 都算 assistant
+    return { y: r.y, role, buttons: r.buttons };
+  });
 }
 
 /**

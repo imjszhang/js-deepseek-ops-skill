@@ -127,7 +127,7 @@ function makeDestructiveExecutor({ pageKey, method, toolName, sideEffect, buildT
         createUrl: targetUrl || 'https://chat.deepseek.com/',
         timeoutMs:
           method === 'sendMessage' || method === 'editMessage' || method === 'regenerateMessage' ? 180000
-          : method === 'domSendMessage' ? 180000
+          : method === 'domSendMessage' || method === 'domEditMessage' || method === 'domRegenerateMessage' ? 180000
           : 60000,
       },
     });
@@ -552,6 +552,46 @@ const TOOL_DEFINITIONS = [
     pageKey: 'chat', method: 'domSendMessage',
     execute: makeDestructiveExecutor({
       toolName: 'deepseek_dom_send_message', pageKey: 'chat', method: 'domSendMessage',
+      sideEffect: 'cost', buildTargetUrl: () => null,
+    }),
+  },
+  {
+    name: 'deepseek_dom_edit_message',
+    label: 'DeepSeek Ops: Edit Message via UI (DOM)',
+    description: '[DESTRUCTIVE,COST] DOM 模式编辑消息：定位 USER 行的"编辑"按钮，替换内容并触发重生。当前仅支持 target="lastUser"。绕开 PoW。',
+    parameters: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: '替换后的 user 消息内容' },
+        target: { type: 'string', enum: ['lastUser'], default: 'lastUser' },
+        waitForFinish: { type: 'boolean', default: true },
+        finishTimeoutMs: { type: 'number' },
+      },
+      required: ['prompt'],
+    },
+    optional: true, interactive: false, destructive: true, sideEffect: 'cost',
+    pageKey: 'chat', method: 'domEditMessage',
+    execute: makeDestructiveExecutor({
+      toolName: 'deepseek_dom_edit_message', pageKey: 'chat', method: 'domEditMessage',
+      sideEffect: 'cost', buildTargetUrl: () => null,
+    }),
+  },
+  {
+    name: 'deepseek_dom_regenerate_message',
+    label: 'DeepSeek Ops: Regenerate Message via UI (DOM)',
+    description: '[DESTRUCTIVE,COST] DOM 模式重生：定位 ASSISTANT 行的"重新生成"按钮并点击。当前仅支持 target="lastAssistant"。绕开 PoW。',
+    parameters: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', enum: ['lastAssistant'], default: 'lastAssistant' },
+        waitForFinish: { type: 'boolean', default: true },
+        finishTimeoutMs: { type: 'number' },
+      },
+    },
+    optional: true, interactive: false, destructive: true, sideEffect: 'cost',
+    pageKey: 'chat', method: 'domRegenerateMessage',
+    execute: makeDestructiveExecutor({
+      toolName: 'deepseek_dom_regenerate_message', pageKey: 'chat', method: 'domRegenerateMessage',
       sideEffect: 'cost', buildTargetUrl: () => null,
     }),
   },

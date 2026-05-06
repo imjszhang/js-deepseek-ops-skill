@@ -33,6 +33,8 @@
     "edit-message": "node index.js edit-message",
     "regenerate-message": "node index.js regenerate-message",
     "dom-send-message": "node index.js dom-send-message",
+    "dom-edit-message": "node index.js dom-edit-message",
+    "dom-regenerate-message": "node index.js dom-regenerate-message",
     "dom-stop-stream": "node index.js dom-stop-stream",
     "upload-file": "node index.js upload-file",
     "share-session": "node index.js share-session",

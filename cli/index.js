@@ -111,7 +111,7 @@ async function runDestructiveCommand(commandName, def, opts, positional) {
         navigateOnReuse: false,
         reuseAnyDeepseekTab: true,
         createUrl: targetUrl || 'https://chat.deepseek.com/',
-        timeoutMs: ['sendMessage', 'editMessage', 'regenerateMessage', 'domSendMessage'].includes(def.api) ? 180000 : 60000,
+        timeoutMs: ['sendMessage', 'editMessage', 'regenerateMessage', 'domSendMessage', 'domEditMessage', 'domRegenerateMessage'].includes(def.api) ? 180000 : 60000,
       },
     });
     printJson(response, opts);

@@ -4,36 +4,46 @@
 
 ## v0.3.1 — DOM 模式（绕开 PoW 限制）
 
-`/api/v0/chat/completion` 强制 PoW（DeepSeekHashV1 / WASM 实现），bridge 内复刻代价过高，导致 `deepseek_send_message` 在生产环境只能拿到 `pow_required`。同时 API 直创的会话在标题未生成前不会显示在 UI 侧栏，对人工/agent 协作不友好。本版引入 DOM 模式，让浏览器自己解 PoW、自己渲染会话。
+`/api/v0/chat/completion` / `edit_message` / `regenerate` 三个端点都强制 PoW（DeepSeekHashV1 / WASM 实现），bridge 内复刻代价过高，导致 v0.3.0 的对应工具在生产环境只能拿到 `pow_required`。同时 API 直创的会话在标题未生成前不会显示在 UI 侧栏，对人工/agent 协作不友好。本版引入 DOM 模式，让浏览器自己解 PoW、自己渲染会话。
 
-### 新增 AI 工具（共 2 个）
+### 新增 AI 工具（共 4 个，全部 DESTRUCTIVE）
 
-- **`deepseek_dom_send_message`** [DESTRUCTIVE,COST]：在 composer 输入并点击发送。在 `/` 上自动创建可见会话；在 `/a/chat/s/<sid>` 上则追加发言。返回 `{sessionId, isNewSession, waitedFinish, messageCount, lastMessage}`，可选 `waitForFinish=false` 跳过流式等待
-- **`deepseek_dom_stop_stream`** [DESTRUCTIVE,reversible]：在流式中点击停止按钮（与发送按钮同位置）
+- **`deepseek_dom_send_message`** [COST]：在 composer 输入并点击发送。在 `/` 上自动创建可见会话；在 `/a/chat/s/<sid>` 上则追加发言。返回 `{sessionId, isNewSession, waitedFinish, messageCount, lastMessage}`，可选 `waitForFinish=false` 跳过流式等待
+- **`deepseek_dom_edit_message`** [COST]：编辑最后一条 USER 消息。**关键发现**：DeepSeek 把每条 USER 消息渲染为 inline `<textarea>`（非 readonly），直接 `setReactInputValue(userTa, newPrompt)` 后 UI 自动出现 `[取消, 发送]` 按钮 —— 因此不需要点击任何"编辑"action button。等待新生消息 messageId > beforeMaxId
+- **`deepseek_dom_regenerate_message`** [COST]：重生最后一条 ASSISTANT 消息。定位策略：`findMessageActionRows()` 把 `.ds-icon-button--m` 按 y 聚类成行（USER=2、ASSISTANT=5 个按钮），ASSISTANT 行索引 1 = 重新生成
+- **`deepseek_dom_stop_stream`** [reversible]：流式中点击 composer 行最右按钮（停止与发送 UI 占同一槽位）
 
 ### 基础设施
 
-- **`bridges/common.js`** 加 helper：`setReactInputValue`（受控输入必走 prototype setter）/ `findComposerSendButton`（启发式：composer 行最右、enabled 的 `ds-icon-button--l`）/ `findComposerStopButton` / `waitFor`（通用轮询）
-- **`bridges/chat-bridge.js`** VERSION `0.3.4 → 0.3.5`：加 `domSendMessage` / `domStopStream`
+- **`bridges/common.js`** 加 helper：
+  - `setReactInputValue`（受控输入必走 prototype setter + `input`/`change` 事件）
+  - `findComposerSendButton`（兼容 `<button>` / `<div role=button>` / 纯 `<div class=ds-icon-button>` 三种实测形态；过滤 `--disabled` cls）
+  - `findComposerStopButton`（同位置但流式中也算 enabled）
+  - `findMessageActionRows`（按 y 聚类 `.ds-icon-button--m`，2=USER / ≥4=ASSISTANT；为虚拟列表外消息留 caveat）
+  - `waitFor`（通用轮询，支持 initialDelayMs）
+- **`bridges/chat-bridge.js`** VERSION `0.3.4 → 0.3.9`：加 `domSendMessage` / `domEditMessage` / `domRegenerateMessage` / `domStopStream`，加 `_findActionRow` 内部 helper（含 scrollIntoView）
 - **`bridges/home-bridge.js`** VERSION `0.3.2 → 0.3.3`：镜像加 `domSendMessage`（home 页 composer 同形态）
-- **`lib/commands.js`** 加 `dom-send-message` / `dom-stop-stream` 两个 CLI；新增 `--no-wait` / `--sid-timeout` / `--finish-timeout` 选项
-- **`skill.contract.js`** `makeDestructiveExecutor` 给 `domSendMessage` 单独配 180s timeout
+- **`lib/commands.js`** 加 4 个 CLI：`dom-send-message` / `dom-edit-message` / `dom-regenerate-message` / `dom-stop-stream`；新增 `--no-wait` / `--sid-timeout` / `--finish-timeout` 选项
+- **`skill.contract.js`** `makeDestructiveExecutor` 给 `domSendMessage` / `domEditMessage` / `domRegenerateMessage` 单独配 180s timeout
 - **`cli/index.js`** 同步 timeout 白名单
 
-### 验证记录
+### 验证记录（2026-05-06，全部已 cleanup）
 
-`dom-send-message` 已分别在以下两个场景跑通并清理：
-
-| 场景 | 起始 URL | sessionId 等待 | 流式等待 | 结果 |
+| 场景 | 工具 | 起始 | 耗时 | 结果 |
 |---|---|---|---|---|
-| 在已有会话 4ee03398 追问 | `/a/chat/s/4ee03398-...` | n/a | 11.5s | 4 条消息 |
-| 在 `/` 创建新会话 299f3082 | `/` | <0.5s | 2.2s | 2 条消息（assistant "ok"） |
+| 已有会话内追问 | `dom-send-message` | `/a/chat/s/<sid>` (12 字符 prompt) | 11.5s 流式完成 | 新增 USER+ASSISTANT 两条 |
+| 从 `/` 创建可见会话 | `dom-send-message` | `/` | sid <0.5s + finish 2.2s | 新会话 + assistant "ok" |
+| 编辑最后 USER 消息 | `dom-edit-message` | 含 1033 char assistant 的会话 | 3.8s 完成 | 新生 user msgId+1, assistant msgId+2 |
+| 重生最后 ASSISTANT | `dom-regenerate-message` | 同上 | 5.2s 完成 | assistant msgId 增长 |
 
-新会话 `299f3082` 上回归测了曾因 `EMPTY_CHAT_SESSION` 失败的 `rename-session` / `pin-session` / `feedback-message` / `unpin-session`，**全部 `ok=true`**，确认空会话约束属服务端业务规则，DOM 模式注入首条消息后即解除。两个测试会话已 `delete-session` 清理（含自动 backup）。
+回归：DOM 创建的会话上跑了曾因 `EMPTY_CHAT_SESSION` 失败的 `rename-session` / `pin-session` / `feedback-message` / `unpin-session`，**全部 `ok=true`**，确认空会话约束属服务端业务规则，DOM 模式注入首条消息后即解除。所有测试会话已 `delete-session` 清理（含自动 backup）。
 
-### 已知限制
+### 探针发现的关键 UI 行为（写给后人）
 
-DOM 模式依赖 composer DOM 结构。当前 (2026-05) 选择器：唯一 `<textarea>` + `composer 行最右、enabled、`button.ds-icon-button--l`。若 DeepSeek 改版需更新 `findComposerSendButton`。检测方式：手动在浏览器里跑 `Array.from(document.querySelectorAll('button.ds-icon-button--l')).map(b=>({cls:b.className,disabled:b.disabled,xy:b.getBoundingClientRect()}))`。
+1. **USER 消息天然是 textarea**：DeepSeek 把每条 user 消息渲染成 `<textarea class="ds-textarea__textarea ...">` 且非 readonly。修改其 value（必须走 React setter） 会让 UI 自动出现 `[取消, 发送]` 按钮。这是 `domEditMessage` 极其简洁的根因。
+2. **action 按钮其实不是 `<button>`**：实测多为 `<div class="ds-icon-button ...">`，无 `role="button"`。所以选择器必须用 `.ds-icon-button` 而非 `button.ds-icon-button`。
+3. **虚拟列表会移除离屏消息**：`.ds-virtual-list` 仅渲染 viewport 附近行，离屏消息及其按钮都不在 DOM。导致 `domEditMessage` 在 assistant 长回复 + USER 上滚出视口的会话上需要 `scrollIntoView`。
+4. **assistant 行 5 个按钮的槽位**（实测 path d 排列）：`[0]复制, [1]重新生成, [2]喜欢, [3]不喜欢, [4]分享/引用`。USER 行 2 个：`[0]复制, [1]编辑`，但编辑路径不必走它。
 
 ---
 

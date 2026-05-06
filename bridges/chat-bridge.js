@@ -39,7 +39,7 @@
 
 (function install() {
   'use strict';
-  const VERSION = '0.3.5';
+  const VERSION = '0.3.9';
 
   // @@include ./common.js
 
@@ -896,6 +896,240 @@
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // domEditMessage / domRegenerateMessage
+  // ---------------------------------------------------------------------------
+  // 与 domSendMessage 同源动机：completion / edit / regenerate 都强制 PoW，
+  // 让浏览器自己点对应的 message-action 按钮即可绕开。
+  //
+  // 定位策略：findMessageActionRows() 把 .ds-icon-button--m 按 y 聚类成"行"，
+  // 行按时序排列；按钮数量 2=USER、≥4=ASSISTANT。target 当前仅支持
+  // 'lastUser' / 'lastAssistant'（满足 95% 实际需求；针对历史早期消息需要
+  // 自动滚动到 row 位置，留给后续）。
+  //
+  // 按钮槽位（实测 2026-05）：
+  //   USER 行: [0]=复制, [1]=编辑
+  //   ASSISTANT 行: [0]=复制, [1]=重新生成, [2]=喜欢, [3]=不喜欢, [4]=分享/引用
+
+  async function _findActionRow(target, opts) {
+    opts = opts || {};
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let rows = [];
+    for (let i = 0; i < 12; i++) {
+      rows = findMessageActionRows();
+      if (rows.length) break;
+      await sleep(200);
+    }
+    if (!rows.length) return { error: 'no_message_rows_found' };
+    function pickRow(rowsArr) {
+      if (target === 'lastUser') {
+        const u = rowsArr.filter((r) => r.role === 'USER');
+        return u[u.length - 1] || null;
+      }
+      if (target === 'lastAssistant') {
+        const a = rowsArr.filter((r) => r.role === 'ASSISTANT');
+        return a[a.length - 1] || null;
+      }
+      return null;
+    }
+    let row = pickRow(rows);
+    if (!row) return { error: 'no_target_row_found', target, rowsTotal: rows.length };
+
+    // 滚到目标按钮可见 — 长 assistant 回复会把 user 行挤出视口
+    if (opts.scrollIntoView !== false) {
+      const btn = row.buttons[0];
+      try { btn.scrollIntoView({ block: 'center', behavior: 'instant' }); }
+      catch (_) { try { btn.scrollIntoView(true); } catch (_) {} }
+      await sleep(400);
+      // 滚动后 virtual list 可能重渲，重新聚类拿 fresh 引用
+      rows = findMessageActionRows();
+      const fresh = pickRow(rows);
+      if (fresh) row = fresh;
+    }
+    return { row, rowsSummary: rows.map((r) => ({ y: Math.round(r.y), role: r.role, btnCount: r.buttons.length })) };
+  }
+
+  async function domEditMessage(args) {
+    args = args || {};
+    const prompt = String(args.prompt || '');
+    if (!prompt.length) return errResult('missing_prompt');
+    if (prompt.length > 50000) return errResult('prompt_too_long', { length: prompt.length });
+    const target = args.target || 'lastUser';
+    if (target !== 'lastUser') return errResult('unsupported_target', { hint: '当前仅支持 target="lastUser"' });
+
+    const sid = parseChatSessionId(location.href);
+    if (!sid) return errResult('not_on_chat_session_page');
+
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    // ---- 关键发现（2026-05）：DeepSeek chat 页里每条 USER 消息渲染为 inline
+    // <textarea> 且非 readonly。直接 setReactInputValue 修改值后，会立刻
+    // 在该 textarea 下方出现 [取消, 发送] 按钮组。无需点击任何"编辑"按钮。
+    // 因此 domEditMessage 跳过 action button，直接定位 user textarea + 替换值。
+
+    const beforeFetch = await fetchHistoryMessagesRaw(sid);
+    const beforeMessages = ((beforeFetch.unwrapped && beforeFetch.unwrapped.biz && beforeFetch.unwrapped.biz.chat_messages) || [])
+      .map((m) => normalizeChatMessage(m, { contentMaxLen: 1 })).map(summarizeMessageMeta).filter(Boolean);
+    const beforeLastUser = [...beforeMessages].reverse().find((m) => m.role === 'USER');
+    const beforeMaxId = beforeMessages.reduce((m, x) => Math.max(m, Number(x.messageId) || 0), 0);
+
+    // 找 last user textarea（非 composer）：composer 通常带 placeholder，
+    // user msg textarea value 非空且能被 setter 写入
+    const tas = Array.from(document.querySelectorAll('textarea')).filter((t) => {
+      const r = t.getBoundingClientRect();
+      return r.width > 0 && !t.disabled && !t.readOnly && t.value && t.value.length > 0;
+    });
+    if (!tas.length) {
+      // 用户 msg 不在视口内 → 滚到 virtual list 末尾以渲出最后 user msg
+      const vl = document.querySelector('.ds-virtual-list');
+      if (vl) {
+        vl.scrollTop = Math.max(0, vl.scrollHeight - vl.clientHeight - 200);
+        await sleep(500);
+      }
+      const tas2 = Array.from(document.querySelectorAll('textarea')).filter((t) => {
+        const r = t.getBoundingClientRect();
+        return r.width > 0 && !t.disabled && !t.readOnly && t.value && t.value.length > 0;
+      });
+      if (!tas2.length) return errResult('no_user_textarea_in_dom', { hint: 'last user msg row not rendered by virtual list' });
+      tas.push(...tas2);
+    }
+    // 取最后一个（最新的 user msg）
+    const userTa = tas[tas.length - 1];
+    userTa.scrollIntoView({ block: 'center', behavior: 'instant' });
+    await sleep(250);
+
+    userTa.focus();
+    setReactInputValue(userTa, prompt);
+    await sleep(200);
+
+    // 等"发送"按钮出现（class 含 ds-basic-button--primary 或文本含发送/Send）
+    const sendBtnWait = await waitFor(() => {
+      const taRect = userTa.getBoundingClientRect();
+      const cands = Array.from(document.querySelectorAll('.ds-basic-button, button, [role="button"]'))
+        .filter((b) => {
+          if (b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
+          const r = b.getBoundingClientRect();
+          if (r.width === 0) return false;
+          // 必须在 textarea 下方 200px 内
+          return r.y >= taRect.bottom - 20 && r.y <= taRect.bottom + 200;
+        });
+      // 优先 primary class
+      const byCls = cands.find((b) => b.className && b.className.includes && b.className.includes('ds-basic-button--primary'));
+      if (byCls) return byCls;
+      const byText = cands.find((b) => /发送|确认|Send|Confirm|提交/i.test(b.textContent || ''));
+      return byText || null;
+    }, { timeoutMs: 4000, intervalMs: 200 });
+    if (!sendBtnWait.ok) return errResult('edit_send_button_not_appeared');
+    sendBtnWait.value.click();
+
+    let waitedFinish = false;
+    let finishElapsedMs = 0;
+    let messages = null;
+    if (args.waitForFinish !== false) {
+      const finishTimeoutMs = Math.max(5000, Number(args.finishTimeoutMs) || 90000);
+      const finishWait = await waitFor(async () => {
+        const r = await fetchHistoryMessagesRaw(sid);
+        const u = r.unwrapped;
+        if (!u || !u.ok) return null;
+        const raw = (u.biz && u.biz.chat_messages) || [];
+        if (!raw.length) return null;
+        const last = raw[raw.length - 1];
+        const role = String(last.role || '').toUpperCase();
+        const status = String(last.status || '').toUpperCase();
+        if (role !== 'ASSISTANT') return null;
+        if (status === 'WIP' || status === 'STREAMING' || status === 'PENDING') return null;
+        // 必须是编辑后新生的消息（messageId 严格大于编辑前最大值）
+        const lastId = Number(last.message_id) || 0;
+        if (lastId <= beforeMaxId) return null;
+        return raw;
+      }, { timeoutMs: finishTimeoutMs, intervalMs: 800, initialDelayMs: 800 });
+      waitedFinish = finishWait.ok;
+      finishElapsedMs = finishWait.elapsedMs;
+      if (finishWait.ok) {
+        messages = finishWait.value
+          .map((m) => normalizeChatMessage(m, { contentMaxLen: 1 }))
+          .map(summarizeMessageMeta).filter(Boolean);
+      }
+    }
+
+    return okResult({
+      sessionId: sid,
+      target: 'lastUser',
+      editedUserMessageBefore: beforeLastUser,
+      promptLength: prompt.length,
+      promptPreview: prompt.slice(0, 80),
+      waitedFinish, finishElapsedMs,
+      messageCount: messages ? messages.length : null,
+      lastMessage: messages ? messages[messages.length - 1] : null,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  async function domRegenerateMessage(args) {
+    args = args || {};
+    const target = args.target || 'lastAssistant';
+    if (target !== 'lastAssistant') return errResult('unsupported_target', { hint: '当前仅支持 target="lastAssistant"' });
+
+    const sid = parseChatSessionId(location.href);
+    if (!sid) return errResult('not_on_chat_session_page');
+
+    const found = await _findActionRow('lastAssistant');
+    if (found.error) return errResult(found.error, { rowsSummary: found.rowsSummary });
+    const row = found.row;
+    if (row.buttons.length < 2) return errResult('assistant_row_missing_regen_button', { btnCount: row.buttons.length });
+    const regenBtn = row.buttons[1]; // 实测槽位 1 = 重新生成
+
+    const beforeFetch = await fetchHistoryMessagesRaw(sid);
+    const beforeMessages = ((beforeFetch.unwrapped && beforeFetch.unwrapped.biz && beforeFetch.unwrapped.biz.chat_messages) || [])
+      .map((m) => normalizeChatMessage(m, { contentMaxLen: 1 })).map(summarizeMessageMeta).filter(Boolean);
+    const beforeLastAssistant = [...beforeMessages].reverse().find((m) => m.role === 'ASSISTANT');
+
+    regenBtn.click();
+
+    let waitedFinish = false;
+    let finishElapsedMs = 0;
+    let messages = null;
+    if (args.waitForFinish !== false) {
+      const finishTimeoutMs = Math.max(5000, Number(args.finishTimeoutMs) || 90000);
+      const finishWait = await waitFor(async () => {
+        const r = await fetchHistoryMessagesRaw(sid);
+        const u = r.unwrapped;
+        if (!u || !u.ok) return null;
+        const raw = (u.biz && u.biz.chat_messages) || [];
+        if (!raw.length) return null;
+        const last = raw[raw.length - 1];
+        const role = String(last.role || '').toUpperCase();
+        const status = String(last.status || '').toUpperCase();
+        if (role !== 'ASSISTANT') return null;
+        if (status === 'WIP' || status === 'STREAMING' || status === 'PENDING') return null;
+        // 检查是否真的更换了内容（msgId 应该不同 / 或 inserted_at 更新）
+        const prevId = beforeLastAssistant && beforeLastAssistant.messageId;
+        const lastNorm = summarizeMessageMeta(normalizeChatMessage(last, { contentMaxLen: 1 }));
+        if (prevId && lastNorm.messageId === prevId &&
+            beforeLastAssistant.insertedAt === lastNorm.insertedAt) return null;
+        return raw;
+      }, { timeoutMs: finishTimeoutMs, intervalMs: 800, initialDelayMs: 800 });
+      waitedFinish = finishWait.ok;
+      finishElapsedMs = finishWait.elapsedMs;
+      if (finishWait.ok) {
+        messages = finishWait.value
+          .map((m) => normalizeChatMessage(m, { contentMaxLen: 1 }))
+          .map(summarizeMessageMeta).filter(Boolean);
+      }
+    }
+
+    return okResult({
+      sessionId: sid,
+      target: 'lastAssistant',
+      regeneratedAssistantBefore: beforeLastAssistant,
+      buttonClass: regenBtn.className || null,
+      waitedFinish, finishElapsedMs,
+      messageCount: messages ? messages.length : null,
+      lastMessage: messages ? messages[messages.length - 1] : null,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   async function domStopStream() {
     const ta = document.querySelector('textarea');
     const btn = findComposerStopButton(ta);
@@ -928,7 +1162,7 @@
     createSession, renameSession, pinSession, unpinSession, deleteSession,
     feedbackMessage, stopStream,
     sendMessage, editMessage, regenerateMessage,
-    domSendMessage, domStopStream,
+    domSendMessage, domEditMessage, domRegenerateMessage, domStopStream,
     uploadFile, listFiles,
     shareSession, unshareSession, listShares,
     updateUserSettings,

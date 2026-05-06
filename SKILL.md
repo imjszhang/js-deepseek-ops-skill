@@ -92,7 +92,7 @@ metadata:
 | `deepseek_navigate_session` | 导航到 /a/chat/s/\<id\> |
 | `deepseek_navigate_new_chat` | 导航到 / 起新对话（不创建 sessionId） |
 
-### DESTRUCTIVE（13 个）
+### DESTRUCTIVE（15 个）
 
 | 工具 | sideEffect | 说明 |
 |---|---|---|
@@ -106,6 +106,8 @@ metadata:
 | `deepseek_edit_message` | cost | 编辑用户消息并重生（同上 PoW 限制） |
 | `deepseek_regenerate_message` | cost | 基于 parent 重生 assistant（同上 PoW 限制） |
 | `deepseek_dom_send_message` | **cost** | **DOM 模式发消息**：在 composer 输入并点击发送，绕开 PoW；在 `/` 自动创建可见会话 |
+| `deepseek_dom_edit_message` | **cost** | **DOM 模式编辑**：USER 消息本身是 inline textarea，直接 setReactInputValue + 点击"发送"。target=`lastUser` |
+| `deepseek_dom_regenerate_message` | **cost** | **DOM 模式重生**：定位 ASSISTANT 行 action 按钮组中的"重新生成"。target=`lastAssistant` |
 | `deepseek_dom_stop_stream` | reversible | DOM 模式停止流（点击 composer 行最右按钮） |
 | `deepseek_upload_file` | reversible | 上传文件（base64） |
 | `deepseek_share_session` | reversible | 创建分享链接 |
@@ -115,10 +117,14 @@ metadata:
 ## 已知限制
 
 - **PoW solver 未实现（已通过 DOM 模式绕开）**：`/api/v0/chat/completion` 等需要 `X-DS-PoW-Response`（基于 `static/sha3_wasm_bg.*.wasm` worker 的 `DeepSeekHashV1`），bridge 端复刻成本高，当前透传 `answer:0`，服务端回 `40301 INVALID_POW_RESPONSE` → 工具返回 `error.code='pow_required'`
-  - **推荐**：用 `deepseek_dom_send_message` / `dom-send-message` CLI；浏览器自己解 PoW
+  - **推荐**：用 `deepseek_dom_send_message` / `deepseek_dom_edit_message` / `deepseek_dom_regenerate_message`；浏览器自己解 PoW
   - 未来 1：在 bridge 端 fetch wasm 并实例化（待研究）
   - 未来 2：hook DeepSeek 自带的 `useProofOfWorkStore` zustand store，复用其缓存的 `pair.answer`
-- **DOM 选择器易碎**：`dom_send_message` 依赖 composer 唯一 `<textarea>` + 行最右 `button.ds-icon-button--l`。若改版需更新 `bridges/common.js` 的 `findComposerSendButton`
+- **DOM 选择器易碎**（关键定位逻辑见 `bridges/common.js`）：
+  - `findComposerSendButton`：composer 行 `.ds-icon-button--l` 最右、enabled
+  - `findMessageActionRows`：`.ds-icon-button--m` 按 y 聚类，2 个=USER、≥4 个=ASSISTANT
+  - `domEditMessage` 直接定位 last user `<textarea>`（非 readonly + 非空），改值后 DeepSeek 自动渲染"发送"按钮
+- **target 限制**：`dom_edit_message` / `dom_regenerate_message` 当前仅支持 `lastUser` / `lastAssistant`。历史早期消息因 `ds-virtual-list` 虚拟化而需要先精确滚动定位，暂未实现
 - **`stop_stream` schema 待补**：bridge 已注册端点；422 表明缺字段，需要在有 active stream 时踩点完整 body
 - **平台子域 API key**：`platform.deepseek.com` 子域的 API key 管理未实现（需要新增 page profile + bridge）
 - **空会话约束**：`update_title` / `update_pinned` 对完全无消息的会话回 `EMPTY_CHAT_SESSION`，是服务端业务约束
@@ -154,6 +160,9 @@ node index.js regenerate-message <sid> 4
 node index.js navigate-home && node index.js dom-send-message "新会话第一条"   # 自动创建可见会话
 node index.js dom-send-message "在当前会话追问"                                  # 当前 chat 页追加
 node index.js dom-send-message "..." --no-wait                                   # 不等流式结束
+node index.js dom-edit-message "改写后的 user 内容" --session <sid>              # 编辑最后 user 消息并重生
+node index.js dom-regenerate-message --session <sid>                             # 重生最后 assistant 消息
+node index.js dom-stop-stream --session <sid>                                    # 流式中点停止
 
 # 本地导出（无副作用）
 node index.js export-session-local <sid> --format md --out ./out.md
