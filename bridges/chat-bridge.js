@@ -39,7 +39,7 @@
 
 (function install() {
   'use strict';
-  const VERSION = '0.3.4';
+  const VERSION = '0.3.5';
 
   // @@include ./common.js
 
@@ -790,6 +790,121 @@
     return okResult({ updated: true, settings: body, raw: u.biz, sourceUrl: resp.url, timestamp: new Date().toISOString() });
   }
 
+  // ---------------------------------------------------------------------------
+  // DOM 模式：模拟用户输入 + 点击发送
+  // ---------------------------------------------------------------------------
+  // 为什么需要：DeepSeek `/api/v0/chat/completion` 强制 PoW（DeepSeekHashV1，
+  // 在 sha3 WASM worker 里跑），bridge 内复刻不现实；同时 API 直创的会话
+  // 在标题尚未生成前不会出现在 UI 侧栏。走 DOM 让浏览器自己解 PoW，
+  // 既能创建可见会话也能在已有会话里发消息。
+  //
+  // 工作流：
+  //   1. 在 / 或已有会话页都成立：找到唯一 textarea
+  //   2. setReactInputValue 写入 prompt（受控输入必须走 prototype setter）
+  //   3. 等发送按钮 enabled，click()
+  //   4. 若起始在 /，轮询 location.pathname 等 sessionId 出现
+  //   5. （可选）轮询 history_messages 直到末条 ASSISTANT 不再 WIP/STREAMING
+
+  async function domSendMessage(args) {
+    args = args || {};
+    const prompt = String(args.prompt || '');
+    if (!prompt.length) return errResult('missing_prompt');
+    if (prompt.length > 50000) return errResult('prompt_too_long', { length: prompt.length });
+
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const beforeUrl = location.href;
+    const beforeSid = parseChatSessionId(beforeUrl);
+
+    const ta = document.querySelector('textarea');
+    if (!ta) return errResult('no_composer_textarea', { url: beforeUrl });
+
+    setReactInputValue(ta, prompt);
+    await sleep(120);
+
+    const btnWait = await waitFor(() => findComposerSendButton(ta), { timeoutMs: 5000, intervalMs: 150 });
+    if (!btnWait.ok) {
+      return errResult('send_button_not_enabled', {
+        composerLen: ta.value.length,
+        attempts: btnWait.attempts,
+        elapsedMs: btnWait.elapsedMs,
+      });
+    }
+    const sendBtn = btnWait.value;
+    sendBtn.click();
+
+    const sidTimeoutMs = Math.max(2000, Number(args.sessionIdTimeoutMs) || 20000);
+    let sid = beforeSid;
+    let isNewSession = false;
+    if (!sid) {
+      isNewSession = true;
+      const sidPattern = /\/a\/chat\/s\/([0-9a-f-]{36})/i;
+      const sidWait = await waitFor(() => {
+        const m = sidPattern.exec(location.href);
+        return m ? m[1] : null;
+      }, { timeoutMs: sidTimeoutMs, intervalMs: 250, initialDelayMs: 300 });
+      if (!sidWait.ok) {
+        return errResult('session_id_did_not_appear', {
+          beforeUrl,
+          afterUrl: location.href,
+          composerStillFilled: !!(ta.value && ta.value.length),
+        });
+      }
+      sid = sidWait.value;
+    }
+
+    let waitedFinish = false;
+    let finishElapsedMs = 0;
+    let messages = null;
+    if (args.waitForFinish !== false) {
+      const finishTimeoutMs = Math.max(5000, Number(args.finishTimeoutMs) || 90000);
+      const finishWait = await waitFor(async () => {
+        const r = await fetchHistoryMessagesRaw(sid);
+        const u = r.unwrapped;
+        if (!u || !u.ok) return null;
+        const raw = (u.biz && u.biz.chat_messages) || [];
+        if (!raw.length) return null;
+        const last = raw[raw.length - 1];
+        const role = String(last.role || '').toUpperCase();
+        const status = String(last.status || '').toUpperCase();
+        if (role !== 'ASSISTANT') return null;
+        if (status === 'WIP' || status === 'STREAMING' || status === 'PENDING') return null;
+        return raw;
+      }, { timeoutMs: finishTimeoutMs, intervalMs: 800, initialDelayMs: 500 });
+      waitedFinish = finishWait.ok;
+      finishElapsedMs = finishWait.elapsedMs;
+      if (finishWait.ok) {
+        messages = finishWait.value
+          .map((m) => normalizeChatMessage(m, { contentMaxLen: 1 }))
+          .map(summarizeMessageMeta)
+          .filter(Boolean);
+      }
+    }
+
+    return okResult({
+      sessionId: sid,
+      isNewSession,
+      beforeUrl,
+      afterUrl: location.href,
+      sendButton: { className: sendBtn.className || null },
+      promptLength: prompt.length,
+      promptPreview: prompt.slice(0, 80),
+      waitedFinish,
+      finishElapsedMs,
+      messageCount: messages ? messages.length : null,
+      lastMessage: messages ? messages[messages.length - 1] : null,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  async function domStopStream() {
+    const ta = document.querySelector('textarea');
+    const btn = findComposerStopButton(ta);
+    if (!btn) return errResult('stop_button_not_found');
+    const cls = btn.className || '';
+    btn.click();
+    return okResult({ clicked: true, buttonClass: cls, timestamp: new Date().toISOString() });
+  }
+
   // ---- INTERACTIVE ----
   function navigateHome() { return navigateLocation(buildDeepseekUrl('/')); }
   function navigateNewChat() { return navigateLocation(buildDeepseekUrl('/')); }
@@ -813,6 +928,7 @@
     createSession, renameSession, pinSession, unpinSession, deleteSession,
     feedbackMessage, stopStream,
     sendMessage, editMessage, regenerateMessage,
+    domSendMessage, domStopStream,
     uploadFile, listFiles,
     shareSession, unshareSession, listShares,
     updateUserSettings,

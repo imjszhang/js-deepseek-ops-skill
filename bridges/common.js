@@ -495,3 +495,84 @@ function normalizeChatMessage(m, options) {
 
 function okResult(data) { return { ok: true, data }; }
 function errResult(error, extra) { return Object.assign({ ok: false, error: String(error) }, extra || {}); }
+
+/**
+ * setReactInputValue - React/Vue 受控输入需要走 prototype setter + 'input' 事件，
+ * 直接 `el.value = '...'` 会被框架忽略并立刻覆盖。textarea / input 通用。
+ *
+ * 这是 DOM 模式发消息（domSendMessage）的关键基础设施。
+ *
+ * @param {HTMLElement} el  textarea 或 input
+ * @param {string} value
+ */
+function setReactInputValue(el, value) {
+  const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+  const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+  if (desc && typeof desc.set === 'function') desc.set.call(el, value);
+  else el.value = value;
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+/**
+ * findComposerSendButton - 启发式定位 chat 页 composer 的"发送"按钮。
+ *
+ * 当前 DeepSeek (2026-05) 实现：composer 区底部有 4 个 ds-icon-button--l：
+ * 思考 toggle / 搜索 toggle / 上传 / 发送（最右）。送达条件：
+ *   - 在 composer 行（rect.y > taRect.bottom）
+ *   - x 最大者
+ *   - !disabled && aria-disabled !== 'true'
+ *
+ * composer 空时发送按钮 disabled，应在调用 setReactInputValue 后再调用本函数。
+ *
+ * @param {HTMLTextAreaElement|null} ta  composer textarea，用于参考底边
+ * @returns {HTMLElement|null}
+ */
+function findComposerSendButton(ta) {
+  const taBottom = ta && ta.getBoundingClientRect ? ta.getBoundingClientRect().bottom : 400;
+  const btns = Array.from(document.querySelectorAll('button.ds-icon-button--l, [role="button"].ds-icon-button--l'));
+  const cands = btns
+    .filter((b) => !b.disabled && b.getAttribute('aria-disabled') !== 'true')
+    .filter((b) => {
+      const r = b.getBoundingClientRect();
+      return r.y >= taBottom - 50; // 允许 50px 滑动空间
+    });
+  if (!cands.length) return null;
+  cands.sort((a, b) => b.getBoundingClientRect().x - a.getBoundingClientRect().x);
+  return cands[0];
+}
+
+/**
+ * findComposerStopButton - 流式中"发送"按钮会被替换为"停止"按钮。
+ * 实测两者占同一位置 (composer 行最右侧 ds-icon-button--l)，但停止按钮 cls 含 stop 关键词
+ * 或 SVG path 不同。这里宽容定位：取 composer 行最右且 enabled 的按钮，
+ * 调用方需自己判断当前是否在流式（streamingStatus）。
+ */
+function findComposerStopButton(ta) {
+  return findComposerSendButton(ta);
+}
+
+/**
+ * waitFor - 通用轮询 helper：每 intervalMs 调一次 fn，返回 truthy 即停。
+ *
+ * @param {() => any|Promise<any>} fn
+ * @param {{timeoutMs:number, intervalMs?:number, initialDelayMs?:number}} opts
+ * @returns {Promise<{ok:boolean, value:any, attempts:number, elapsedMs:number}>}
+ */
+async function waitFor(fn, opts) {
+  opts = opts || {};
+  const intervalMs = opts.intervalMs || 300;
+  const timeoutMs = opts.timeoutMs || 30000;
+  const start = Date.now();
+  if (opts.initialDelayMs) await new Promise((r) => setTimeout(r, opts.initialDelayMs));
+  let attempts = 0;
+  while (Date.now() - start < timeoutMs) {
+    attempts++;
+    try {
+      const v = await fn();
+      if (v) return { ok: true, value: v, attempts, elapsedMs: Date.now() - start };
+    } catch (_) {}
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  return { ok: false, value: null, attempts, elapsedMs: Date.now() - start };
+}

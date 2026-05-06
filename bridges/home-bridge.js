@@ -17,7 +17,7 @@
 
 (function install() {
   'use strict';
-  const VERSION = '0.3.2';
+  const VERSION = '0.3.3';
 
   // @@include ./common.js
 
@@ -199,12 +199,89 @@
     return okResult({ updated: true, settings: body, raw: u.biz, sourceUrl: resp.url, timestamp: new Date().toISOString() });
   }
 
+  // ---------------------------------------------------------------------------
+  // DOM 模式 - 见 chat-bridge.js 同名方法的 doc。home 页 composer 同样是
+  // 唯一 textarea + composer 行最右侧 ds-icon-button--l。点击后 SPA 路由
+  // 切到 /a/chat/s/<sid>，sid 出现即视为创建成功。
+  async function domSendMessage(args) {
+    args = args || {};
+    const prompt = String(args.prompt || '');
+    if (!prompt.length) return errResult('missing_prompt');
+    if (prompt.length > 50000) return errResult('prompt_too_long', { length: prompt.length });
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const beforeUrl = location.href;
+
+    const ta = document.querySelector('textarea');
+    if (!ta) return errResult('no_composer_textarea', { url: beforeUrl });
+
+    setReactInputValue(ta, prompt);
+    await sleep(120);
+
+    const btnWait = await waitFor(() => findComposerSendButton(ta), { timeoutMs: 5000, intervalMs: 150 });
+    if (!btnWait.ok) return errResult('send_button_not_enabled', { composerLen: ta.value.length, attempts: btnWait.attempts });
+    btnWait.value.click();
+
+    const sidPattern = /\/a\/chat\/s\/([0-9a-f-]{36})/i;
+    const sidWait = await waitFor(() => {
+      const m = sidPattern.exec(location.href);
+      return m ? m[1] : null;
+    }, { timeoutMs: Math.max(2000, Number(args.sessionIdTimeoutMs) || 20000), intervalMs: 250, initialDelayMs: 300 });
+    if (!sidWait.ok) return errResult('session_id_did_not_appear', { beforeUrl, afterUrl: location.href });
+    const sid = sidWait.value;
+
+    let waitedFinish = false;
+    let finishElapsedMs = 0;
+    let lastMessage = null;
+    let messageCount = null;
+    if (args.waitForFinish !== false) {
+      const finishTimeoutMs = Math.max(5000, Number(args.finishTimeoutMs) || 90000);
+      const finishWait = await waitFor(async () => {
+        const r = await fetchDeepseekJson('/api/v0/chat/history_messages?chat_session_id=' + encodeURIComponent(sid), { textLimit: 600 });
+        const u = unwrapDeepseekResponse(r);
+        if (!u || !u.ok) return null;
+        const raw = (u.biz && u.biz.chat_messages) || [];
+        if (!raw.length) return null;
+        const last = raw[raw.length - 1];
+        const role = String(last.role || '').toUpperCase();
+        const status = String(last.status || '').toUpperCase();
+        if (role !== 'ASSISTANT') return null;
+        if (status === 'WIP' || status === 'STREAMING' || status === 'PENDING') return null;
+        return raw;
+      }, { timeoutMs: finishTimeoutMs, intervalMs: 800, initialDelayMs: 500 });
+      waitedFinish = finishWait.ok;
+      finishElapsedMs = finishWait.elapsedMs;
+      if (finishWait.ok) {
+        const msgs = finishWait.value.map((m) => normalizeChatMessage(m, { contentMaxLen: 1 })).map(summarizeMessageMeta).filter(Boolean);
+        messageCount = msgs.length;
+        lastMessage = msgs[msgs.length - 1];
+      }
+    }
+
+    return okResult({
+      sessionId: sid, isNewSession: true,
+      beforeUrl, afterUrl: location.href,
+      promptLength: prompt.length, promptPreview: prompt.slice(0, 80),
+      waitedFinish, finishElapsedMs,
+      messageCount, lastMessage,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  async function domStopStream() {
+    const ta = document.querySelector('textarea');
+    const btn = findComposerStopButton(ta);
+    if (!btn) return errResult('stop_button_not_found');
+    btn.click();
+    return okResult({ clicked: true, buttonClass: btn.className || null, timestamp: new Date().toISOString() });
+  }
+
   const api = {
     __meta: { version: VERSION, name: 'home-bridge' },
     probe, state, sessionState, listSessions,
     navigateHome, navigateNewChat, navigateSession,
     createSession, renameSession, pinSession, unpinSession, deleteSession,
     getSessionSnapshot,
+    domSendMessage, domStopStream,
     shareSession, unshareSession, listShares,
     updateUserSettings,
   };

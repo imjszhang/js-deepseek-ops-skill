@@ -125,7 +125,10 @@ function makeDestructiveExecutor({ pageKey, method, toolName, sideEffect, buildT
         navigateOnReuse: false,
         reuseAnyDeepseekTab: true,
         createUrl: targetUrl || 'https://chat.deepseek.com/',
-        timeoutMs: method === 'sendMessage' || method === 'editMessage' || method === 'regenerateMessage' ? 180000 : 60000,
+        timeoutMs:
+          method === 'sendMessage' || method === 'editMessage' || method === 'regenerateMessage' ? 180000
+          : method === 'domSendMessage' ? 180000
+          : 60000,
       },
     });
   };
@@ -523,6 +526,45 @@ const TOOL_DEFINITIONS = [
     execute: makeDestructiveExecutor({
       toolName: 'deepseek_regenerate_message', pageKey: 'chat', method: 'regenerateMessage',
       sideEffect: 'cost', buildTargetUrl: (p) => p.sessionId ? targets.chatSessionUrl({ sessionId: p.sessionId }) : null,
+    }),
+  },
+
+  // ===== DESTRUCTIVE: DOM 模式（绕开 PoW） =====
+  // sendMessage 走 /api/v0/chat/completion 必须 PoW（DeepSeekHashV1，WASM
+  // worker），bridge 不复刻；改让浏览器自己解：在 composer 里输入并点击发送。
+  // 同时副作用：API 直创的会话标题未生成时不出现在 UI 侧栏；DOM 模式
+  // 永远会让会话出现（因为有首条消息）。
+  {
+    name: 'deepseek_dom_send_message',
+    label: 'DeepSeek Ops: Send Message via UI (DOM)',
+    description: '[DESTRUCTIVE,COST] DOM 模式：在 composer 输入并点击发送。在 / 上自动创建可见会话；在已有会话页则追加发言。绕开 bridge PoW 限制。',
+    parameters: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: '要发送的消息文本' },
+        waitForFinish: { type: 'boolean', default: true, description: '是否轮询 history_messages 直到末条 ASSISTANT 不再 STREAMING/WIP' },
+        sessionIdTimeoutMs: { type: 'number', description: '从 / 创建后等待 sessionId 出现的超时；默认 20000' },
+        finishTimeoutMs: { type: 'number', description: '等流式结束的超时；默认 90000' },
+      },
+      required: ['prompt'],
+    },
+    optional: true, interactive: false, destructive: true, sideEffect: 'cost',
+    pageKey: 'chat', method: 'domSendMessage',
+    execute: makeDestructiveExecutor({
+      toolName: 'deepseek_dom_send_message', pageKey: 'chat', method: 'domSendMessage',
+      sideEffect: 'cost', buildTargetUrl: () => null,
+    }),
+  },
+  {
+    name: 'deepseek_dom_stop_stream',
+    label: 'DeepSeek Ops: Stop Stream via UI (DOM)',
+    description: '[DESTRUCTIVE,reversible] DOM 模式：在流式中点击停止按钮。需在 chat 页且当前正在流式。',
+    parameters: { type: 'object', properties: {} },
+    optional: true, interactive: false, destructive: true, sideEffect: 'reversible',
+    pageKey: 'chat', method: 'domStopStream',
+    execute: makeDestructiveExecutor({
+      toolName: 'deepseek_dom_stop_stream', pageKey: 'chat', method: 'domStopStream',
+      sideEffect: 'reversible', buildTargetUrl: () => null,
     }),
   },
 

@@ -2,6 +2,41 @@
 
 本仓库的版本历史与根因索引。SKILL.md 只保留前向规划，所有"已发生"的变更与事故复盘都迁到这里。
 
+## v0.3.1 — DOM 模式（绕开 PoW 限制）
+
+`/api/v0/chat/completion` 强制 PoW（DeepSeekHashV1 / WASM 实现），bridge 内复刻代价过高，导致 `deepseek_send_message` 在生产环境只能拿到 `pow_required`。同时 API 直创的会话在标题未生成前不会显示在 UI 侧栏，对人工/agent 协作不友好。本版引入 DOM 模式，让浏览器自己解 PoW、自己渲染会话。
+
+### 新增 AI 工具（共 2 个）
+
+- **`deepseek_dom_send_message`** [DESTRUCTIVE,COST]：在 composer 输入并点击发送。在 `/` 上自动创建可见会话；在 `/a/chat/s/<sid>` 上则追加发言。返回 `{sessionId, isNewSession, waitedFinish, messageCount, lastMessage}`，可选 `waitForFinish=false` 跳过流式等待
+- **`deepseek_dom_stop_stream`** [DESTRUCTIVE,reversible]：在流式中点击停止按钮（与发送按钮同位置）
+
+### 基础设施
+
+- **`bridges/common.js`** 加 helper：`setReactInputValue`（受控输入必走 prototype setter）/ `findComposerSendButton`（启发式：composer 行最右、enabled 的 `ds-icon-button--l`）/ `findComposerStopButton` / `waitFor`（通用轮询）
+- **`bridges/chat-bridge.js`** VERSION `0.3.4 → 0.3.5`：加 `domSendMessage` / `domStopStream`
+- **`bridges/home-bridge.js`** VERSION `0.3.2 → 0.3.3`：镜像加 `domSendMessage`（home 页 composer 同形态）
+- **`lib/commands.js`** 加 `dom-send-message` / `dom-stop-stream` 两个 CLI；新增 `--no-wait` / `--sid-timeout` / `--finish-timeout` 选项
+- **`skill.contract.js`** `makeDestructiveExecutor` 给 `domSendMessage` 单独配 180s timeout
+- **`cli/index.js`** 同步 timeout 白名单
+
+### 验证记录
+
+`dom-send-message` 已分别在以下两个场景跑通并清理：
+
+| 场景 | 起始 URL | sessionId 等待 | 流式等待 | 结果 |
+|---|---|---|---|---|
+| 在已有会话 4ee03398 追问 | `/a/chat/s/4ee03398-...` | n/a | 11.5s | 4 条消息 |
+| 在 `/` 创建新会话 299f3082 | `/` | <0.5s | 2.2s | 2 条消息（assistant "ok"） |
+
+新会话 `299f3082` 上回归测了曾因 `EMPTY_CHAT_SESSION` 失败的 `rename-session` / `pin-session` / `feedback-message` / `unpin-session`，**全部 `ok=true`**，确认空会话约束属服务端业务规则，DOM 模式注入首条消息后即解除。两个测试会话已 `delete-session` 清理（含自动 backup）。
+
+### 已知限制
+
+DOM 模式依赖 composer DOM 结构。当前 (2026-05) 选择器：唯一 `<textarea>` + `composer 行最右、enabled、`button.ds-icon-button--l`。若 DeepSeek 改版需更新 `findComposerSendButton`。检测方式：手动在浏览器里跑 `Array.from(document.querySelectorAll('button.ds-icon-button--l')).map(b=>({cls:b.className,disabled:b.disabled,xy:b.getBoundingClientRect()}))`。
+
+---
+
 ## v0.3.0 — **BREAKING：安全姿态反转，DESTRUCTIVE 全量解锁**
 
 把 skill 从只读升级为完整 ops 工具。`SKILL.md` 的"明确不做的事"段整段废弃；不再做调用前 confirm；改为 **audit 模式**：destructive 调用直接执行，但完整请求体 + 响应强制写入 `audit.jsonl`；`delete_session` / `unshare_session` 等不可逆操作前自动 backup。

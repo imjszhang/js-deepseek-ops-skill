@@ -205,6 +205,24 @@ LLM 自负责传合法 key。
 
 ---
 
+## DOM 模式（绕开 PoW，不走 API）
+
+`/api/v0/chat/completion` 强制 `X-DS-PoW-Response`（DeepSeekHashV1 / WASM），bridge 不复刻。改让浏览器自己解：
+
+| 阶段 | 实现 | 备注 |
+|---|---|---|
+| 1. 写入 prompt | `setReactInputValue(textarea, prompt)` | React 受控输入必须走 prototype `value` setter + `input`/`change` 事件 |
+| 2. 等发送按钮 enabled | `waitFor(findComposerSendButton, ...)` | composer 行最右、enabled 的 `button.ds-icon-button--l`（实测 4 个：思考/搜索/上传/发送） |
+| 3. 点击 | `sendBtn.click()` | 浏览器内部触发 PoW worker → fetch `/api/v0/chat/completion` |
+| 4. 等 sessionId（仅 `/` 起始） | 轮询 `location.href.match(/\/a\/chat\/s\/([0-9a-f-]{36})/)` | SPA route 切换 |
+| 5. 等流式完成（可选） | 轮询 `/api/v0/chat/history_messages?chat_session_id=<sid>`，末条 ASSISTANT 不再 `WIP/STREAMING/PENDING` | 默认 90s 超时 |
+
+实测耗时（2026-05）：从 `/` 创建 → sessionId < 0.5s，"ok" 级回复完成总计 3.6s；已有会话内 12 字符问题 → 完成 12s。
+
+详见 `bridges/common.js::findComposerSendButton` / `bridges/chat-bridge.js::domSendMessage`。
+
+---
+
 ## URL 路径模式（导航用）
 
 | 路径 | 含义 |
