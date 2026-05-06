@@ -11,6 +11,9 @@ const {
   buildGetSessionTransform,
   buildGetMessageTransform,
   buildListMessagesTransform,
+  buildGetSessionTreeTransform,
+  buildGetBranchPathTransform,
+  buildListBranchPointsTransform,
 } = require('./lib/redact');
 const { ensureSkillRecordsReadme } = require('./lib/skillRecordsReadme');
 
@@ -24,6 +27,9 @@ const CLI_COMMANDS = [
   { name: 'chat-page-state', description: '读取当前 chat 页 UI 状态快照' },
   { name: 'list-messages', description: '列出当前会话的消息元数据（永不含正文）' },
   { name: 'get-message', description: '读取单条消息（默认 redact=off）' },
+  { name: 'get-session-tree', description: '读取会话全分支树（含被埋藏的旧分支兄弟）' },
+  { name: 'list-branch-points', description: '仅列出会话中的分支点 + 每分支 children 摘要（轻量）' },
+  { name: 'get-branch-path', description: '从指定 leaf messageId 反推 root 的线性路径（默认 leaf=current）' },
   { name: 'streaming-status', description: '一次性观察 assistant 是否在产出' },
   { name: 'chat-settings-view', description: '只读拉 /api/v0/client/settings' },
   { name: 'navigate-home', description: '导航到 / （INTERACTIVE）' },
@@ -292,6 +298,100 @@ const TOOL_DEFINITIONS = [
       return runTool(runtime.ensureBot(), {
         toolName: 'deepseek_get_message', pageKey: 'chat', method: 'getMessage',
         args: { sessionId: p.sessionId, messageId: p.messageId, contentMaxLen: p.contentMaxLen },
+        targetUrl,
+        options: {
+          wsEndpoint: runtime.config.serverUrl, recording: runtime.config.recording,
+          runId: context.toolCallId, navigateOnReuse: false, reuseAnyDeepseekTab: true,
+          createUrl: targetUrl || 'https://chat.deepseek.com/', transformResult: transform,
+        },
+      });
+    },
+  },
+  {
+    name: 'deepseek_get_session_tree',
+    label: 'DeepSeek Ops: Get Session Tree',
+    description: '读取会话全分支树（含被埋藏的旧分支兄弟）。返回 SessionTree（nodes map + activePathIds + branchPointIds + stats）。默认 redact="off"。',
+    parameters: {
+      type: 'object',
+      properties: {
+        sessionId: { type: 'string' },
+        redact: { type: 'string', enum: ['off', 'trunc', 'full'], default: 'off' },
+        truncLen: { type: 'number' },
+        contentMaxLen: { type: 'number' },
+        limit: { type: 'number', description: '节点上限，0=不限；超限按 messageId 倒序保留最新' },
+      },
+      required: ['sessionId'],
+    },
+    optional: true, interactive: false, destructive: false, sideEffect: null,
+    pageKey: 'chat', method: 'getSessionTree',
+    execute(runtime, params, context = {}) {
+      const p = params || {};
+      const transform = buildGetSessionTreeTransform({ mode: p.redact || 'off', truncLen: p.truncLen });
+      const targetUrl = p.sessionId ? targets.chatSessionUrl({ sessionId: p.sessionId }) : null;
+      return runTool(runtime.ensureBot(), {
+        toolName: 'deepseek_get_session_tree', pageKey: 'chat', method: 'getSessionTree',
+        args: { sessionId: p.sessionId, contentMaxLen: p.contentMaxLen, limit: p.limit },
+        targetUrl,
+        options: {
+          wsEndpoint: runtime.config.serverUrl, recording: runtime.config.recording,
+          runId: context.toolCallId, navigateOnReuse: false, reuseAnyDeepseekTab: true,
+          createUrl: targetUrl || 'https://chat.deepseek.com/', transformResult: transform,
+        },
+      });
+    },
+  },
+  {
+    name: 'deepseek_list_branch_points',
+    label: 'DeepSeek Ops: List Branch Points',
+    description: '仅列出会话中的分支点（同 parent 下 children >= 2 的节点）+ 每分支的 children 元数据。轻量发现工具，永不返回正文。',
+    parameters: {
+      type: 'object',
+      properties: { sessionId: { type: 'string' } },
+      required: ['sessionId'],
+    },
+    optional: true, interactive: false, destructive: false, sideEffect: null,
+    pageKey: 'chat', method: 'listBranchPoints',
+    execute(runtime, params, context = {}) {
+      const p = params || {};
+      const transform = buildListBranchPointsTransform();
+      const targetUrl = p.sessionId ? targets.chatSessionUrl({ sessionId: p.sessionId }) : null;
+      return runTool(runtime.ensureBot(), {
+        toolName: 'deepseek_list_branch_points', pageKey: 'chat', method: 'listBranchPoints',
+        args: { sessionId: p.sessionId },
+        targetUrl,
+        options: {
+          wsEndpoint: runtime.config.serverUrl, recording: runtime.config.recording,
+          runId: context.toolCallId, navigateOnReuse: false, reuseAnyDeepseekTab: true,
+          createUrl: targetUrl || 'https://chat.deepseek.com/', transformResult: transform,
+        },
+      });
+    },
+  },
+  {
+    name: 'deepseek_get_branch_path',
+    label: 'DeepSeek Ops: Get Branch Path',
+    description: '返回从 root 到指定 leaf messageId 的线性 messages[]，schema 与 deepseek_get_session 兼容。leaf 省略时等价于 active path（current_message_id）。',
+    parameters: {
+      type: 'object',
+      properties: {
+        sessionId: { type: 'string' },
+        leafMessageId: { type: 'number', description: '目标分支末端 messageId；省略则用 session.current_message_id' },
+        redact: { type: 'string', enum: ['off', 'trunc', 'full'], default: 'off' },
+        truncLen: { type: 'number' },
+        contentMaxLen: { type: 'number' },
+        limit: { type: 'number' },
+      },
+      required: ['sessionId'],
+    },
+    optional: true, interactive: false, destructive: false, sideEffect: null,
+    pageKey: 'chat', method: 'getBranchPath',
+    execute(runtime, params, context = {}) {
+      const p = params || {};
+      const transform = buildGetBranchPathTransform({ mode: p.redact || 'off', truncLen: p.truncLen });
+      const targetUrl = p.sessionId ? targets.chatSessionUrl({ sessionId: p.sessionId }) : null;
+      return runTool(runtime.ensureBot(), {
+        toolName: 'deepseek_get_branch_path', pageKey: 'chat', method: 'getBranchPath',
+        args: { sessionId: p.sessionId, leafMessageId: p.leafMessageId, contentMaxLen: p.contentMaxLen, limit: p.limit },
         targetUrl,
         options: {
           wsEndpoint: runtime.config.serverUrl, recording: runtime.config.recording,

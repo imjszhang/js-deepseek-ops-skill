@@ -2,6 +2,60 @@
 
 本仓库的版本历史与根因索引。SKILL.md 只保留前向规划，所有"已发生"的变更与事故复盘都迁到这里。
 
+## v0.4.0 — 全分支树读取（2026-05-07）
+
+DeepSeek 单会话内"上一个分支 / 下一个分支"切换器背后的完整消息树首次对外暴露。
+核心发现：`/api/v0/chat/history_messages` **单次响应即返回会话全树节点的并集**
+（含被埋藏的旧分支兄弟），并非此前文档里描述的"当前主干"。详见踩点报告
+[`docs/dev/branch-scout.md`](docs/dev/branch-scout.md) 与决策记录
+[`docs/dev/adr-001-branch-tree-route.md`](docs/dev/adr-001-branch-tree-route.md)。
+
+实测对照：测试 session `d54aadf1-...` 全树 292 节点，17 个分支点（最多 4 children），
+active path 长度 126，**166 条（57%）消息在 UI 上看不到** —— 全部由 v0.4.0 的新工具
+还原。
+
+### 新增工具（READ，3 个）
+
+- `deepseek_get_session_tree`：返回 SessionTree（`nodes` map + `activePathIds` +
+  `branchPointIds` + `stats`），每节点带 `childrenIds` / `siblingIndex` /
+  `isOnActivePath` / `isBranchPoint` / `isLeaf` / `depth` 等树重建字段
+- `deepseek_list_branch_points`：仅列分叉点 + children 摘要（轻量发现，永不带正文）
+- `deepseek_get_branch_path`：从指定 `leafMessageId` 反推 root 的线性 messages[]，
+  schema 与 `deepseek_get_session` 兼容（drop-in）；leaf 省略时等价于 active path
+
+CLI：`get-session-tree` / `list-branch-points` / `get-branch-path`（后者支持
+`--leaf <messageId>`）。
+
+### 新增 / 修改
+
+- `bridges/chat-bridge.js`：新增纯函数 `buildSessionTree(rawSession, rawMessages, options)`
+  + 3 个 READ 方法；VERSION 升到 `0.3.14`
+- `lib/redact.js`：新增 `redactSessionTreeResult` 与三个 transform 工厂
+  （`buildGetSessionTreeTransform` / `buildGetBranchPathTransform` /
+  `buildListBranchPointsTransform`）；list_branch_points 沿用 list_messages 的"防漏
+  断言"模式
+- `skill.contract.js`：`TOOL_DEFINITIONS` +3（READ 段，自定义 `execute` 套 transform，
+  与 `deepseek_get_session` 同模式）
+- `lib/commands.js`：`COMMANDS` +3，`parseArgv` 增 `--leaf` / `--leaf-message-id`
+- 文档：`SKILL.md` 工具清单更新；`docs/dev/api-endpoints.md` 修正
+  `history_messages` 段（"chat_messages[] 是全树并集"）；`docs/dev/bridges-cheatsheet.md`
+  补 `buildSessionTree` 入口
+
+### 安全与兼容
+
+- 全部 READ 档：**零 destructive、零 audit、零 backup**；redact 默认 `off`，与
+  `get_session` 一致
+- 完全 additive：`get_session` / `list_messages` / `get_message` 行为不变；
+  仅补强 `docs/dev/api-endpoints.md` 描述
+- 仍走 chat 页 bridge（pageKey: `chat`）；home-bridge 未镜像（与 `get_session` 一致）
+
+### 不做的事（推迟到后续小版本）
+
+- mermaid / graphviz 树形可视化输出（CLI `--format mermaid`）
+- 增量同步（利用观察到的 `cache_version` / `cache_reset_at` query 参数）
+- 本地树缓存（`~/.js-eyes/skill-records/.../cache/tree-<sid>.json`）
+- home-bridge 镜像 3 工具
+
 ## v0.3.3 — 下线 delete_session（2026-05-07）
 
 按用户要求移除"删除会话"工具。删除会话是真正不可逆操作，本地

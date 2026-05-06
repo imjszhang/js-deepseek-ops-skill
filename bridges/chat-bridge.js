@@ -38,7 +38,7 @@
 
 (function install() {
   'use strict';
-  const VERSION = '0.3.13';
+  const VERSION = '0.3.14';
 
   // @@include ./common.js
 
@@ -283,6 +283,312 @@
       session: sess,
       messages: out,
       messageCount: out.length,
+      sourceUrl: resp.url,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  // ---- READ: 全分支树（v0.4.0） ----
+  //
+  // 踩点结论（docs/dev/branch-scout.md）：/api/v0/chat/history_messages 单次响应即返回
+  // 整棵会话树的所有节点（含被埋藏的旧分支兄弟）。服务端不返 children 反向索引也
+  // 不返 branch 标识，全靠 parent_id 指针重建。buildSessionTree 是纯函数：输入
+  // {session, chat_messages}，输出 SessionTree（详见 docs/dev/session-tree-schema.md）。
+  //
+  // 三个对外方法 getSessionTree / listBranchPoints / getBranchPath 都是 buildSessionTree
+  // 的 view —— 后两者基于全树派生轻量结果。
+
+  function _emptyTreeStats() {
+    return {
+      totalMessages: 0, branchPointCount: 0, leafCount: 0, maxDepth: 0,
+      activePathLength: 0, inactiveMessageCount: 0,
+      orphanIds: [], warnings: [],
+    };
+  }
+
+  /**
+   * buildSessionTree(rawSession, rawMessages, options) -> SessionTree
+   *
+   * 不变量：
+   *   - rootMessageIds[].every(id => nodes[id].parentId === null)
+   *   - branchPointIds[].every(id => nodes[id].childrenIds.length >= 2)
+   *   - 反向一致：父的 childrenIds 包含每个 child；每个 child 的 parentId 等于父
+   *   - activePathIds[0] === root（若 currentMessageId 在树中）
+   *   - siblingIndex < siblingCount，且同 parent 下 children 的 siblingIndex 互不相同
+   */
+  function buildSessionTree(rawSession, rawMessages, options) {
+    options = options || {};
+    const contentMaxLen = clampLimit(options.contentMaxLen, DEFAULT_CONTENT_MAX_LEN, 200000);
+    const session = normalizeChatSessionItem(rawSession) || null;
+    const list = Array.isArray(rawMessages) ? rawMessages : [];
+    const stats = _emptyTreeStats();
+
+    const nodes = Object.create(null);
+    for (const m of list) {
+      const norm = normalizeChatMessage(m, { contentMaxLen });
+      if (!norm || typeof norm.messageId !== 'number') continue;
+      // 树扩展字段先占位，二遍填值
+      norm.childrenIds = [];
+      norm.depth = 0;
+      norm.siblingIndex = 0;
+      norm.siblingCount = 1;
+      norm.isOnActivePath = false;
+      norm.isBranchPoint = false;
+      norm.isLeaf = true;
+      nodes[String(norm.messageId)] = norm;
+    }
+
+    // 二遍：建反向索引（按 inserted_at 升序，缺失时退化为 messageId 升序）
+    const rootIds = [];
+    const orphanIds = [];
+    for (const key in nodes) {
+      const n = nodes[key];
+      if (n.parentId == null) {
+        rootIds.push(n.messageId);
+        continue;
+      }
+      const parent = nodes[String(n.parentId)];
+      if (!parent) {
+        orphanIds.push(n.messageId);
+        continue;
+      }
+      parent.childrenIds.push(n.messageId);
+    }
+
+    function _sortChildren(ids) {
+      ids.sort((a, b) => {
+        const na = nodes[String(a)];
+        const nb = nodes[String(b)];
+        const ta = na && na.insertedAt ? Date.parse(na.insertedAt) || 0 : 0;
+        const tb = nb && nb.insertedAt ? Date.parse(nb.insertedAt) || 0 : 0;
+        if (ta !== tb) return ta - tb;
+        return a - b;
+      });
+    }
+    _sortChildren(rootIds);
+    for (const key in nodes) _sortChildren(nodes[key].childrenIds);
+
+    // 三遍：BFS 计算 depth / siblingIndex / siblingCount / isLeaf / isBranchPoint
+    const branchPointIds = [];
+    let leafCount = 0;
+    let maxDepth = 0;
+    const queue = rootIds.map((id) => ({ id, depth: 0, parentChildren: rootIds }));
+    while (queue.length) {
+      const cur = queue.shift();
+      const n = nodes[String(cur.id)];
+      if (!n) continue;
+      n.depth = cur.depth;
+      const sibs = cur.parentChildren;
+      n.siblingCount = sibs.length;
+      n.siblingIndex = sibs.indexOf(cur.id);
+      n.isLeaf = n.childrenIds.length === 0;
+      n.isBranchPoint = n.childrenIds.length >= 2;
+      if (n.isBranchPoint) branchPointIds.push(n.messageId);
+      if (n.isLeaf) leafCount += 1;
+      if (cur.depth > maxDepth) maxDepth = cur.depth;
+      for (const cid of n.childrenIds) {
+        queue.push({ id: cid, depth: cur.depth + 1, parentChildren: n.childrenIds });
+      }
+    }
+    branchPointIds.sort((a, b) => a - b);
+
+    // active path：从 currentMessageId 沿 parentId 回溯
+    const currentMessageId = session && typeof session.currentMessageId === 'number'
+      ? session.currentMessageId
+      : null;
+    const activePathIds = [];
+    const warnings = [];
+    if (currentMessageId == null) {
+      warnings.push('current_message_id_missing');
+    } else if (!nodes[String(currentMessageId)]) {
+      warnings.push('current_message_not_in_tree');
+    } else {
+      let cur = currentMessageId;
+      const seen = Object.create(null);
+      while (cur != null && nodes[String(cur)] && !seen[String(cur)]) {
+        seen[String(cur)] = true;
+        activePathIds.unshift(cur);
+        const p = nodes[String(cur)].parentId;
+        cur = (p == null) ? null : p;
+      }
+    }
+    for (const id of activePathIds) {
+      const n = nodes[String(id)];
+      if (n) n.isOnActivePath = true;
+    }
+
+    // stats
+    stats.totalMessages = Object.keys(nodes).length;
+    stats.branchPointCount = branchPointIds.length;
+    stats.leafCount = leafCount;
+    stats.maxDepth = stats.totalMessages > 0 ? maxDepth + 1 : 0;
+    stats.activePathLength = activePathIds.length;
+    stats.inactiveMessageCount = stats.totalMessages - activePathIds.length;
+    stats.orphanIds = orphanIds.sort((a, b) => a - b);
+    stats.warnings = warnings;
+    if (rootIds.length > 1) stats.warnings.push('multi_root');
+
+    return {
+      session: session || { id: null },
+      rootMessageIds: rootIds,
+      currentMessageId,
+      activePathIds,
+      branchPointIds,
+      nodes,
+      stats,
+    };
+  }
+
+  async function getSessionTree(args) {
+    args = args || {};
+    const sid = args.sessionId || parseChatSessionId(location.href);
+    if (!sid) return errResult('missing_session_id');
+    const { resp, unwrapped: u } = await fetchHistoryMessagesRaw(sid);
+    if (!u.ok) return mapHistoryError(resp, u, sid);
+    const biz = u.biz || {};
+    const contentMaxLen = clampLimit(args.contentMaxLen, DEFAULT_CONTENT_MAX_LEN, 200000);
+    const tree = buildSessionTree(biz.chat_session, biz.chat_messages, { contentMaxLen });
+
+    // limit：仅在节点数超限时按 messageId 倒序保留最新
+    const limit = clampLimit(args.limit, 0, 5000);
+    let truncatedToLimit = false;
+    if (limit > 0 && tree.stats.totalMessages > limit) {
+      const ids = Object.keys(tree.nodes).map((k) => Number(k)).sort((a, b) => b - a).slice(0, limit);
+      const keep = Object.create(null);
+      for (const id of ids) keep[String(id)] = true;
+      const filtered = Object.create(null);
+      for (const k in tree.nodes) if (keep[k]) filtered[k] = tree.nodes[k];
+      tree.nodes = filtered;
+      tree.activePathIds = tree.activePathIds.filter((id) => keep[String(id)]);
+      tree.branchPointIds = tree.branchPointIds.filter((id) => keep[String(id)]);
+      tree.rootMessageIds = tree.rootMessageIds.filter((id) => keep[String(id)]);
+      tree.stats.totalMessages = ids.length;
+      tree.stats.warnings.push('truncated_to_limit');
+      truncatedToLimit = true;
+    }
+
+    return okResult(Object.assign({}, tree, {
+      contentMaxLen,
+      truncatedToLimit,
+      sourceUrl: resp.url,
+      timestamp: new Date().toISOString(),
+    }));
+  }
+
+  async function listBranchPoints(args) {
+    args = args || {};
+    const sid = args.sessionId || parseChatSessionId(location.href);
+    if (!sid) return errResult('missing_session_id');
+    const { resp, unwrapped: u } = await fetchHistoryMessagesRaw(sid);
+    if (!u.ok) return mapHistoryError(resp, u, sid);
+    const biz = u.biz || {};
+    const tree = buildSessionTree(biz.chat_session, biz.chat_messages, { contentMaxLen: 1 });
+    const branchPoints = tree.branchPointIds.map((id) => {
+      const n = tree.nodes[String(id)];
+      const children = (n.childrenIds || []).map((cid) => {
+        const c = tree.nodes[String(cid)];
+        if (!c) return { messageId: cid, missing: true };
+        return {
+          messageId: c.messageId,
+          role: c.role,
+          insertedAt: c.insertedAt,
+          contentLength: c.contentLength,
+          // bridge 端不算 sha256 同步成本（avoid await）；正文 hash 留给 redact 层补
+          isOnActivePath: c.isOnActivePath,
+          isLeaf: c.isLeaf,
+          isBranchPoint: c.isBranchPoint,
+          status: c.status,
+          siblingIndex: c.siblingIndex,
+        };
+      });
+      return {
+        messageId: n.messageId,
+        role: n.role,
+        depth: n.depth,
+        isOnActivePath: n.isOnActivePath,
+        childrenCount: n.childrenIds.length,
+        children,
+      };
+    });
+    return okResult({
+      session: tree.session,
+      currentMessageId: tree.currentMessageId,
+      activePathLength: tree.activePathIds.length,
+      totalMessages: tree.stats.totalMessages,
+      branchPointCount: branchPoints.length,
+      branchPoints,
+      sourceUrl: resp.url,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  async function getBranchPath(args) {
+    args = args || {};
+    const sid = args.sessionId || parseChatSessionId(location.href);
+    if (!sid) return errResult('missing_session_id');
+    const { resp, unwrapped: u } = await fetchHistoryMessagesRaw(sid);
+    if (!u.ok) return mapHistoryError(resp, u, sid);
+    const biz = u.biz || {};
+    const contentMaxLen = clampLimit(args.contentMaxLen, DEFAULT_CONTENT_MAX_LEN, 200000);
+    const tree = buildSessionTree(biz.chat_session, biz.chat_messages, { contentMaxLen });
+
+    const requested = (args.leafMessageId == null) ? null : Number(args.leafMessageId);
+    let leafResolved;
+    if (requested == null) {
+      leafResolved = tree.currentMessageId;
+    } else if (!tree.nodes[String(requested)]) {
+      return errResult('branch_leaf_not_found', { sessionId: sid, leafMessageId: requested });
+    } else {
+      leafResolved = requested;
+    }
+
+    const warnings = [];
+    if (leafResolved == null) {
+      return errResult('branch_leaf_not_found', { sessionId: sid, leafMessageId: null, hint: 'session.current_message_id is null and no explicit leaf provided' });
+    }
+    const leafNode = tree.nodes[String(leafResolved)];
+    if (leafNode && leafNode.childrenIds && leafNode.childrenIds.length > 0) {
+      warnings.push('leaf_has_children');
+    }
+
+    // 反向走 parent 收集，stripping tree-extension fields 以兼容 getSession.messages[] schema
+    const path = [];
+    let cur = leafResolved;
+    const seen = Object.create(null);
+    while (cur != null && tree.nodes[String(cur)] && !seen[String(cur)]) {
+      seen[String(cur)] = true;
+      const n = tree.nodes[String(cur)];
+      const flat = Object.assign({}, n);
+      delete flat.childrenIds;
+      delete flat.depth;
+      delete flat.siblingIndex;
+      delete flat.siblingCount;
+      delete flat.isOnActivePath;
+      delete flat.isBranchPoint;
+      delete flat.isLeaf;
+      path.unshift(flat);
+      cur = n.parentId;
+    }
+
+    let messages = path;
+    let truncatedToLimit = false;
+    const limit = clampLimit(args.limit, 0, 5000);
+    if (limit > 0 && messages.length > limit) {
+      messages = messages.slice(-limit);
+      truncatedToLimit = true;
+    }
+
+    return okResult({
+      session: tree.session,
+      messages,
+      messageCount: path.length,
+      returnedCount: messages.length,
+      leafMessageId: requested,
+      leafResolved,
+      isOnActivePath: leafResolved === tree.currentMessageId,
+      truncatedToLimit,
+      contentMaxLen,
+      warnings,
       sourceUrl: resp.url,
       timestamp: new Date().toISOString(),
     });
@@ -1312,6 +1618,7 @@
     probe, state, sessionState, chatPageState,
     getSession, listMessages, getMessage,
     streamingStatus, chatSettingsView, getSessionSnapshot,
+    getSessionTree, listBranchPoints, getBranchPath,
     // INTERACTIVE
     navigateHome, navigateNewChat, navigateSession,
     // DESTRUCTIVE

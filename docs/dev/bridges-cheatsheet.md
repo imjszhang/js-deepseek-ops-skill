@@ -61,6 +61,8 @@ window.__jse_deepseek_<name>__ = {
 | `lib/session.js::Session` | bridge 注入 / 调用的最小生命周期；`callApi(method, args)` 是日常入口 |
 | `lib/runTool.js::runTool` | READ 工具公共流（history + debug，**不走 cache**），支持 `transformResult` hook |
 | `lib/redact.js::buildGetSessionTransform` | 给 `deepseek_get_session` 用的 redact transform，会装进 `runTool` 的 `options.transformResult` |
+| `lib/redact.js::buildGetSessionTreeTransform` / `buildGetBranchPathTransform` / `buildListBranchPointsTransform` | v0.4.0 全分支树工具的 redact transforms |
+| `bridges/chat-bridge.js::buildSessionTree(rawSession, rawMessages, options)` | v0.4.0 纯函数：从 `/api/v0/chat/history_messages` 响应直接构建 SessionTree（含 `nodes` map + `activePathIds` + `branchPointIds` + `stats`），是 `getSessionTree` / `listBranchPoints` / `getBranchPath` 三个方法的共享内核。详见 [`session-tree-schema.md`](./session-tree-schema.md) |
 | `lib/runCliToFile.js::runCliToFile` | 跑 `node index.js <args>` 把 stdout 直写到文件（绕开 Node `>64KB` `child.stdout.pipe()` 截断坑） |
 | `lib/toolTargets.js::homeUrl/chatSessionUrl` | 拼 navigate 目标 URL，避免硬编码 origin |
 
@@ -86,6 +88,7 @@ window.__jse_deepseek_<name>__ = {
 | `non_json_response` | content-type 非 JSON | 通常是被风控拦截到登录页 |
 | `cross_origin_navigation_forbidden` | navigate 传了非 deepseek.com URL | 硬约束，绝不放行 |
 | `missing_session_id` | `getSession` / `navigateSession` 缺 sessionId | 入参错误 |
+| `branch_leaf_not_found` | `getBranchPath` 传的 `leafMessageId` 不在树里 | 拼错或该消息已被服务端真删（罕见） |
 
 ## 故障排查（开发侧）
 

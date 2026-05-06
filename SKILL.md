@@ -1,7 +1,7 @@
 ---
 name: js-deepseek-ops-skill
 description: DeepSeek Chat 全量自动化 skill：READ + INTERACTIVE + DESTRUCTIVE 三档；登录态 / 历史会话 / 单会话历史 / chat 页深度只读 + 创建/重命名/置顶 / 反馈 / 上传 / 分享 / 账号设置 / DOM 模式发/编辑/重生消息（绕开 PoW）。所有 destructive 调用强制写 audit.jsonl，irreversible 调用前自动 backup。**v0.3.3 起不再暴露删除会话工具**（不可逆且无可靠补偿，请走官方 UI）。
-version: 0.3.0
+version: 0.4.0
 metadata:
   openclaw:
     emoji: "\U0001F9E0"
@@ -67,15 +67,18 @@ metadata:
 
 **Backup 文件**：`backups/session-<sid>-<ISO ts>.json`，包含会话标题 / 消息元数据 / 每条 sha256+length（不含正文）。
 
-## 工具清单（共 24 个）
+## 工具清单（共 33 个）
 
-### READ（10 个）
+### READ（13 个）
 
 | 工具 | 说明 |
 |---|---|
 | `deepseek_session_state` | 登录态 / 用户基本信息 |
 | `deepseek_list_sessions` | 历史会话列表（标题 / 时间，不含正文） |
-| `deepseek_get_session` | 单会话消息历史（默认 redact off） |
+| `deepseek_get_session` | 单会话消息历史（含全分支节点平铺；默认 redact off） |
+| `deepseek_get_session_tree` | **v0.4.0** 会话全分支树（nodes map + activePathIds + branchPointIds + stats） |
+| `deepseek_list_branch_points` | **v0.4.0** 仅分支点 + children 摘要（轻量发现，永不带正文） |
+| `deepseek_get_branch_path` | **v0.4.0** 从指定 leaf 反推 root 的线性路径（默认 leaf=current；schema 兼容 get_session） |
 | `deepseek_chat_page_state` | 当前 chat 页 UI 状态（composer 仅 sha256） |
 | `deepseek_list_messages` | 消息元数据（永不出正文） |
 | `deepseek_get_message` | 单条消息详情（默认 redact off） |
@@ -139,6 +142,12 @@ node index.js list-sessions --limit 25
 node index.js get-session <sid> --limit 20 --pretty
 node index.js list-messages <sid>
 node index.js get-message <sid> 12 --redact trunc
+
+# v0.4.0 全分支树
+node index.js get-session-tree <sid>                   # 完整 SessionTree（含所有分支兄弟）
+node index.js list-branch-points <sid>                 # 仅分支点 + children 摘要（轻量）
+node index.js get-branch-path <sid>                    # active path（默认 leaf=current_message_id）
+node index.js get-branch-path <sid> --leaf 33          # 指定 leaf 还原被埋藏分支
 node index.js chat-settings-view --scope model
 
 # DESTRUCTIVE（reversible）

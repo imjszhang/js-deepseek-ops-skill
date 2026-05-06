@@ -10,6 +10,9 @@ const {
   buildGetSessionTransform,
   buildGetMessageTransform,
   buildListMessagesTransform,
+  buildGetSessionTreeTransform,
+  buildGetBranchPathTransform,
+  buildListBranchPointsTransform,
 } = require('../lib/redact');
 const { ensureSkillRecordsReadme } = require('../lib/skillRecordsReadme');
 
@@ -191,6 +194,16 @@ async function runToolCommand(commandName, def, opts, positional) {
     transformResult = buildGetMessageTransform({ mode, truncLen });
   } else if (commandName === 'list-messages') {
     transformResult = buildListMessagesTransform();
+  } else if (commandName === 'get-session-tree') {
+    const mode = opts.redact || 'off';
+    const truncLen = opts.truncLen ? Number(opts.truncLen) : undefined;
+    transformResult = buildGetSessionTreeTransform({ mode, truncLen });
+  } else if (commandName === 'get-branch-path') {
+    const mode = opts.redact || 'off';
+    const truncLen = opts.truncLen ? Number(opts.truncLen) : undefined;
+    transformResult = buildGetBranchPathTransform({ mode, truncLen });
+  } else if (commandName === 'list-branch-points') {
+    transformResult = buildListBranchPointsTransform();
   }
   try {
     const response = await runTool(browser, {

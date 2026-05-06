@@ -34,7 +34,7 @@
 |---|---|---|---|---|
 | **READ** | `/api/v0/users/current` | GET | 登录态 / 账户基本信息 | `session_state` |
 | READ | `/api/v0/chat_session/fetch_page` | GET | 历史会话列表（分页） | `list_sessions` |
-| READ | `/api/v0/chat/history_messages` | GET | 单会话消息历史 | `get_session` / `list_messages` / `get_message` / `streaming_status` |
+| READ | `/api/v0/chat/history_messages` | GET | 单会话**全分支**消息（含 active path 与所有兄弟分支） | `get_session` / `list_messages` / `get_message` / `streaming_status` / `get_session_tree` / `list_branch_points` / `get_branch_path` |
 | READ | `/api/v0/client/settings` | GET | model 列表 / feature flag | `chat_settings_view` |
 | READ | `/api/v0/file/fetch_files` | GET | 当前账号上传的文件 | `list_files` |
 | READ | `/api/v0/share/list` | GET (`?count=N`) | 分享列表 | `list_shares` |
@@ -80,14 +80,25 @@
 `inserted_at` / `pinned` / `model_type` / `agent` / `version` / `current_message_id`，
 另带 `has_more`。分页用上一页最后一条的 `seq_id` 作为 `before_seq_id`。
 
-### `/api/v0/chat/history_messages?chat_session_id=<uuid>`
+### `/api/v0/chat/history_messages?chat_session_id=<uuid>[&cache_version=<n>&cache_reset_at=<ts>]`
 
-`biz_data.chat_session` 同 fetch_page 字段集 + `is_empty`。
-`biz_data.chat_messages[]`：`message_id` / `parent_id` / `model` / `role` (`USER`/`ASSISTANT`/`SYSTEM`) /
-`status` (`FINISHED`/`STREAMING`/`INTERRUPTED`/...) / `thinking_enabled` / `search_enabled` /
+`biz_data.chat_session` 同 fetch_page 字段集 + `is_empty` + `current_message_id`（active leaf 的 messageId）。
+
+`biz_data.chat_messages[]` **是会话全树节点的并集**（含 active path 与所有被埋藏的旧分支兄弟）—— v0.4.0 踩点结论（详见 [`branch-scout.md`](./branch-scout.md)）。每个节点：
+`message_id` / `parent_id` / `model` / `role` (`USER`/`ASSISTANT`/`SYSTEM`) /
+`status` (`FINISHED`/`STREAMING`/`INTERRUPTED`/`CONTENT_FILTER`/...) / `thinking_enabled` / `search_enabled` /
 `ban_edit` / `ban_regenerate` / `accumulated_token_usage` / `inserted_at` / `content` /
 `thinking_content` / `thinking_elapsed_secs` / `incomplete_message` / `feedback` /
 `files[]` / `search_results[]` / `search_status` / `tips[]`。
+
+**关键性质**：
+- 节点不带 `branch_id` / `sibling_index` / `is_current` 等专用字段；分支信息**完全靠 `parent_id` 树形结构表达**（同 parent_id 出现多次 = 分支点）
+- active path（UI 上当前可见的对话流）= 从 `current_message_id` 沿 `parent_id` 反推到 root
+- 服务端不返 children 反向索引，需要客户端构建（见 `bridges/chat-bridge.js::buildSessionTree`）
+
+**可选 query 参数**（v0.4.0 bridge 当前未传，留作未来增量同步优化）：
+- `cache_version`：与 `session.version` / `current_message_id` 一致；客户端缓存有效性校验
+- `cache_reset_at`：unix 秒级时间戳；缓存失效锚点
 
 ### `/api/v0/chat_session/create` (POST)
 
