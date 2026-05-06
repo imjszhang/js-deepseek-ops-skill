@@ -63,6 +63,108 @@ function validateRequiredArgs(def, positional) {
   }
 }
 
+async function runDestructiveCommand(commandName, def, opts, positional) {
+  validateRequiredArgs(def, positional);
+  const args = def.toArgs ? def.toArgs(opts, positional) : [{}];
+  const targetUrl = typeof def.targetUrl === 'function' ? def.targetUrl(opts, positional) : null;
+  const runtimeConfig = resolveRuntimeConfig({
+    browserServer: opts.wsEndpoint || process.env.JS_EYES_WS_URL,
+    recording: {
+      ...(opts.recordingMode ? { mode: opts.recordingMode } : {}),
+      ...(opts.recordingBaseDir ? { baseDir: opts.recordingBaseDir } : {}),
+    },
+  });
+  const browser = new BrowserAutomation(runtimeConfig.serverUrl, opts.verbose ? {} : {
+    logger: { info: () => {}, warn: (...a) => console.error(...a), error: (...a) => console.error(...a) },
+  });
+  const argsObj = (args && args[0]) || {};
+  let prefetchBackup = null;
+  if (def.prefetchBackup === true) {
+    prefetchBackup = async function (session, a) {
+      try {
+        const snap = await session.callApi('getSessionSnapshot', [{ sessionId: a.sessionId }], { timeoutMs: 30000 });
+        if (snap && snap.ok && snap.data) return { resource: 'session', id: a.sessionId, snapshot: snap.data };
+        return { resource: 'session', id: a.sessionId, snapshot: { unavailable: true, error: snap && snap.error } };
+      } catch (e) {
+        return { resource: 'session', id: a.sessionId, snapshot: { unavailable: true, message: String(e && e.message) } };
+      }
+    };
+  }
+  try {
+    const response = await runTool(browser, {
+      toolName: def.toolName,
+      pageKey: pickPage(commandName, opts),
+      method: def.api,
+      args: argsObj,
+      targetUrl,
+      destructive: true,
+      sideEffect: def.sideEffect || 'reversible',
+      prefetchBackup,
+      options: {
+        verbose: opts.verbose,
+        tab: opts.tab,
+        wsEndpoint: runtimeConfig.serverUrl,
+        recording: runtimeConfig.recording,
+        recordingMode: opts.recordingMode,
+        debugRecording: opts.debugRecording,
+        runId: opts.runId,
+        navigateOnReuse: false,
+        reuseAnyDeepseekTab: true,
+        createUrl: targetUrl || 'https://chat.deepseek.com/',
+        timeoutMs: ['sendMessage', 'editMessage', 'regenerateMessage'].includes(def.api) ? 180000 : 60000,
+      },
+    });
+    printJson(response, opts);
+    return response && response.ok === false ? 1 : 0;
+  } finally {
+    try { browser.disconnect(); } catch (_) {}
+  }
+}
+
+async function runExportSessionLocal(opts, positional) {
+  const fs = require('fs');
+  const path = require('path');
+  const sessionId = positional[0];
+  if (!sessionId) {
+    process.stderr.write('export-session-local: 缺少 <sessionId>\n');
+    return 2;
+  }
+  const format = (opts.format || 'json').toLowerCase();
+  const session = new Session({
+    opts: Object.assign(buildSessionOpts('export-session-local', opts), {
+      reuseAnyDeepseekTab: true, navigateOnReuse: false, createIfMissing: false,
+    }),
+  });
+  let payload = null;
+  try {
+    await session.connect();
+    await session.resolveTarget();
+    await session.ensureBridge();
+    payload = await session.callApi('getSession', [{ sessionId, limit: opts.limit ? Number(opts.limit) : undefined, contentMaxLen: 200000 }], { timeoutMs: 60000 });
+  } finally { await session.close(); }
+  if (!payload || !payload.ok) {
+    printJson({ ok: false, error: 'export_failed', detail: payload }, opts);
+    return 1;
+  }
+  const data = payload.data || {};
+  const outPath = opts.out || `./deepseek-session-${sessionId}.${format === 'md' ? 'md' : 'json'}`;
+  let body;
+  if (format === 'md') {
+    const lines = [`# ${(data.session && data.session.title) || sessionId}`, ''];
+    for (const m of (data.messages || [])) {
+      lines.push(`## ${m.role || 'unknown'} (msg ${m.messageId}, ${m.status}) — ${m.insertedAt}`);
+      if (m.thinkingContent) { lines.push('', '<thinking>', m.thinkingContent, '</thinking>'); }
+      lines.push('', m.content || '', '');
+    }
+    body = lines.join('\n');
+  } else {
+    body = JSON.stringify(data, null, 2);
+  }
+  fs.writeFileSync(path.resolve(outPath), body, 'utf8');
+  printJson({ ok: true, exported: true, path: path.resolve(outPath), format, messages: (data.messages || []).length }, opts);
+  return 0;
+}
+
 async function runToolCommand(commandName, def, opts, positional) {
   validateRequiredArgs(def, positional);
   const args = def.toArgs ? def.toArgs(opts, positional) : [{}];
@@ -351,8 +453,10 @@ async function main(argv) {
   if (command === 'doctor') return runDoctor(opts);
   if (command === 'dom-dump') return runDomDump(opts);
   if (command === 'xhr-log') return runXhrLog(opts);
+  if (command === 'export-session-local') return runExportSessionLocal(opts, positional);
   if (def.kind === 'call') return runCallCommand(command, def, opts, positional);
   if (def.kind === 'tool') return runToolCommand(command, def, opts, positional);
+  if (def.kind === 'destructive') return runDestructiveCommand(command, def, opts, positional);
   if (def.kind === 'navigate') return runNavigateCommand(command, def, opts, positional);
   throw new Error(`command kind 不支持: ${def.kind}`);
 }
@@ -372,6 +476,8 @@ module.exports = {
   runXhrLog,
   runCallCommand,
   runToolCommand,
+  runDestructiveCommand,
   runNavigateCommand,
+  runExportSessionLocal,
   printHelp,
 };

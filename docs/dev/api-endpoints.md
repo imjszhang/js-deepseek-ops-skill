@@ -1,189 +1,228 @@
 # DeepSeek Chat 内部 API 端点（踩点结果）
 
-> 本文档仅列**实际在浏览器里观察到的**端点 + 用到的字段子集。
+> 本文档列出本 skill 实际消费 / 已观察的 `/api/v0/*` 端点。
 >
-> 凡是没在 `xhr-log` / `dom-dump` 里实际触发过的端点，**严禁**写进 bridge 主路径——
-> 这条规则与 [`js-reddit-ops-skill`](../../../js-reddit-ops-skill/SKILL.md) 的「明确不做的事」一致。
+> **数据样例（用户 / 会话标题 / 消息正文）绝不贴入本文档；只记字段名 + 典型类型。**
 >
-> 数据样例（用户 / 会话标题 / 消息正文）**绝不**贴进本文档；只记录字段名与典型类型。
+> v0.3 BREAKING：从只读 skill 反转为全量 ops，DESTRUCTIVE 端点也启用。
+> 安全语义改由 Node 端 `lib/runTool.js` destructive 分支 + `lib/audit.js` 提供
+> （详见 [`SKILL.md`](../../SKILL.md)）。
 
 ---
 
 ## 通用响应壳
 
-DeepSeek 的所有 `/api/v0/*` 接口返回统一壳子：
+```json
+{ "code": 0, "msg": "", "data": { "biz_code": 0, "biz_msg": "", "biz_data": <真正业务数据> } }
+```
+
+判定：`code === 0` 且 `data.biz_code === 0` 才算业务成功。
+实现 → `bridges/common.js::unwrapDeepseekResponse`。
+
+## 鉴权
+
+- **首选**：`Authorization: Bearer <token>` —— `localStorage.userToken` parse JSON 取 `.value`
+- 兜底：`credentials: 'include'`（cookie 同源）
+- 实现 → `bridges/common.js::readUserToken` + `fetchDeepseekJson`
+
+## 端点全景表（v0.3 webpack scan）
+
+下表来自 `bridges/chat-bridge.js` 注释的"端点目录"，从首屏 5 个 webpack 主 bundle
+里 `RegExp(/\/api\/v0\/[\w\/]+/g)` 提取（共 36 项）：
+
+| 类别 | 端点 | 方法 | 用途 | 本 skill 工具 |
+|---|---|---|---|---|
+| **READ** | `/api/v0/users/current` | GET | 登录态 / 账户基本信息 | `session_state` |
+| READ | `/api/v0/chat_session/fetch_page` | GET | 历史会话列表（分页） | `list_sessions` |
+| READ | `/api/v0/chat/history_messages` | GET | 单会话消息历史 | `get_session` / `list_messages` / `get_message` / `streaming_status` |
+| READ | `/api/v0/client/settings` | GET | model 列表 / feature flag | `chat_settings_view` |
+| READ | `/api/v0/file/fetch_files` | GET | 当前账号上传的文件 | `list_files` |
+| READ | `/api/v0/share/list` | GET (`?count=N`) | 分享列表 | `list_shares` |
+| READ | `/api/v0/users/settings` | GET | 账号设置 | （未单列） |
+| READ | `/api/v0/share/content` | GET | 单个分享内容 | （未实现） |
+| **DESTRUCTIVE,reversible** | `/api/v0/chat_session/create` | POST `{}` | 创建新会话 | `create_session` |
+| DESTRUCTIVE,reversible | `/api/v0/chat_session/update_title` | POST `{chat_session_id, title}` | 重命名 | `rename_session` |
+| DESTRUCTIVE,reversible | `/api/v0/chat_session/update_pinned` | POST `{chat_session_id, pinned}` | 置顶 / 取消置顶 | `pin_session` / `unpin_session` |
+| DESTRUCTIVE,reversible | `/api/v0/chat/message_feedback` | POST `{chat_session_id, message_id, feedback_type, feedback_tag, description}` | 消息反馈 | `feedback_message` |
+| DESTRUCTIVE,reversible | `/api/v0/chat/stop_stream` | POST | 停止当前流 | `stop_stream` |
+| DESTRUCTIVE,reversible | `/api/v0/share/create` | POST `{chat_session_id, title?, message_ids?}` | 创建分享 | `share_session` |
+| DESTRUCTIVE,reversible | `/api/v0/file/upload_file` | POST multipart | 上传文件 | `upload_file` |
+| DESTRUCTIVE,reversible | `/api/v0/users/update_settings` | POST `{...}` | 更新账号设置 | `update_user_settings` |
+| **DESTRUCTIVE,irreversible** | `/api/v0/chat_session/delete` | POST `{chat_session_id}` | 删除会话（auto-backup） | `delete_session` |
+| DESTRUCTIVE,irreversible | `/api/v0/chat_session/delete_all` | POST | 删除所有会话 | （**永不实现**） |
+| DESTRUCTIVE,irreversible | `/api/v0/share/delete` | POST `{share_id}` | 删除分享 | `unshare_session` |
+| **DESTRUCTIVE,cost** | `/api/v0/chat/completion` | POST → SSE | 发消息（PoW 必需） | `send_message` |
+| DESTRUCTIVE,cost | `/api/v0/chat/edit_message` | POST → SSE | 编辑消息并重生 | `edit_message` |
+| DESTRUCTIVE,cost | `/api/v0/chat/regenerate` | POST → SSE | 重生 assistant 回复 | `regenerate_message` |
+| DESTRUCTIVE,cost | `/api/v0/chat/continue` | POST → SSE | 续写 | （未实现） |
+| DESTRUCTIVE,cost | `/api/v0/chat/resume_stream` | POST | 恢复中断流 | （未实现） |
+| 辅助 | `/api/v0/chat/create_pow_challenge` | POST `{target_path}` | 拿 PoW challenge | bridge 内部 |
+| 辅助 | `/api/v0/file/fork_file_task` | POST | 文件 task 复制 | （未实现） |
+| 辅助 | `/api/v0/share/fork` | POST | 分享 fork | （未实现） |
+| 辅助 | `/api/v0/users` | POST | 用户 CRUD | （未实现） |
+| 辅助 | `/api/v0/users/create_email_verification_code` | POST | 验证码 | （永不实现） |
+| 辅助 | `/api/v0/users/create_sms_verification_code` | POST | 验证码 | （永不实现） |
+| 辅助 | `/api/v0/users/create_guest_challenge` | POST | guest PoW | （永不实现） |
+| 辅助 | `/api/v0/users/logout_all_sessions` | POST | 登出所有会话 | （永不实现，用户级危险） |
+| 辅助 | `/api/v0/users/set_birthday` | POST | 补生日 | （未实现） |
+| 辅助 | `/api/v0/download_export_history` | - | 历史导出（本地） | 见 `export_session_local` |
+| 辅助 | `/api/v0/export_all` | - | 全量导出 | （未实现） |
+| 辅助 | `/api/v0/client/span` | POST | 客户端埋点 | （永不实现） |
+| 辅助 | `/api/v0/client/wechat_js_sdk_signature` | GET | 微信 SDK | （永不实现） |
+
+---
+
+## 字段细节
+
+### `/api/v0/chat_session/fetch_page?count=N[&before_seq_id=<seqId>]`
+
+`biz_data.chat_sessions[]` 字段：`id` / `seq_id` / `title` / `title_type` / `updated_at` /
+`inserted_at` / `pinned` / `model_type` / `agent` / `version` / `current_message_id`，
+另带 `has_more`。分页用上一页最后一条的 `seq_id` 作为 `before_seq_id`。
+
+### `/api/v0/chat/history_messages?chat_session_id=<uuid>`
+
+`biz_data.chat_session` 同 fetch_page 字段集 + `is_empty`。
+`biz_data.chat_messages[]`：`message_id` / `parent_id` / `model` / `role` (`USER`/`ASSISTANT`/`SYSTEM`) /
+`status` (`FINISHED`/`STREAMING`/`INTERRUPTED`/...) / `thinking_enabled` / `search_enabled` /
+`ban_edit` / `ban_regenerate` / `accumulated_token_usage` / `inserted_at` / `content` /
+`thinking_content` / `thinking_elapsed_secs` / `incomplete_message` / `feedback` /
+`files[]` / `search_results[]` / `search_status` / `tips[]`。
+
+### `/api/v0/chat_session/create` (POST)
+
+请求体可空 `{}`；可选 `agent` / `character_id`。
+返回 `biz_data` 即新 session 对象（`id` / `seq_id` / `agent` / `model_type` / `title=null` /
+`title_type='WIP'` / `pinned=false` / 时间戳 / 等）。
+
+### `/api/v0/chat_session/update_title` (POST)
+
+`{chat_session_id, title}`。空会话（无任何消息）会回 `biz_code=5 EMPTY_CHAT_SESSION`。
+`title` 服务端最大长度未严测，bridge 端硬截到 200 字。
+
+### `/api/v0/chat_session/update_pinned` (POST)
+
+`{chat_session_id, pinned}`。同样空会话回 EMPTY_CHAT_SESSION。
+
+### `/api/v0/chat_session/delete` (POST)
+
+`{chat_session_id}`。空会话也可删；`biz_data` 为 `null`。
+**irreversible**：本 skill 调用前自动 `getSessionSnapshot` 写 backup 到
+`~/.js-eyes/skill-records/<skill>/backups/session-<sid>-<ts>.json`。
+
+### `/api/v0/chat/message_feedback` (POST)
 
 ```json
 {
-  "code": 0,
-  "msg": "",
-  "data": {
-    "biz_code": 0,
-    "biz_msg": "",
-    "biz_data": <真正的业务数据>
+  "chat_session_id": "<uuid>",
+  "message_id": <int>,
+  "feedback_type": "GOOD" | "BAD" | null,
+  "feedback_tag": null,
+  "description": <string|null>
+}
+```
+
+`feedback_type` 是 `MessageFeedbackType` enum：`LIKE → "GOOD"`、`DISLIKE → "BAD"`、
+取消反馈传 `null`。CLI 兼容数值 `1/-1/0`。
+
+### `/api/v0/chat/completion` (POST → SSE)
+
+```json
+{
+  "chat_session_id": "<uuid>",
+  "parent_message_id": <int|null>,
+  "prompt": "...",
+  "ref_file_ids": [],
+  "thinking_enabled": <bool>,
+  "search_enabled": <bool>
+}
+```
+
+**必需 header**：`X-DS-PoW-Response: <base64(JSON({algorithm, challenge, salt, answer, signature, target_path}))>`
+- challenge 由 `/api/v0/chat/create_pow_challenge` 拿到
+- `answer` 是计算结果，需要跑 `DeepSeekHashV1`（基于 `static/sha3_wasm_bg.*.wasm` 的 worker）
+- bridge 端**不实现** PoW 求解（wasm worker 复刻成本高），透传 `answer:0`，
+  服务端会回 `code=40301 INVALID_POW_RESPONSE`，工具返回 `error.code='pow_required'`，
+  让上层走 UI 通道（非本 skill 范畴）
+
+SSE 格式（每个 event 形如 `data: <json>\n\n`，结尾 `data: [DONE]`）：
+- `{"v": "字"}` 或 `{"v": "字", "p": "response/thinking_content"}`
+- `{"v": {"content": "...", "thinking_content": "...", "message_id": N, "model": "...", "usage": {...}, "finish_reason": "stop"}}`
+
+bridge 内 `_completionLike` 聚合所有 chunk 后一次性回 `{messageId, contentLength,
+contentSha256, usage, chunkCount, ...}`，默认不返正文（`includeContent=true` 时回原文）。
+
+### `/api/v0/chat/edit_message` / `regenerate` (POST → SSE)
+
+参考 completion，`edit_message` 多带 `message_id`，`regenerate` 多带 `parent_message_id`。
+PoW header 同样必需，同样状态。
+
+### `/api/v0/chat/stop_stream` (POST)
+
+需要传当前正在流的 message_id 等额外字段，bridge 当前 schema 不完整，
+v0.3 标记为"已注册但 schema 待补"。
+
+### `/api/v0/chat/create_pow_challenge` (POST)
+
+`{target_path: <api path>}`。返回：
+
+```json
+{
+  "challenge": {
+    "algorithm": "DeepSeekHashV1",
+    "challenge": "<hex>",
+    "salt": "<hex>",
+    "signature": "<hex>",
+    "difficulty": 144000,
+    "expire_at": <ms>,
+    "expire_after": 300000,
+    "target_path": "/api/v0/chat/completion"
   }
 }
 ```
 
-判定规则：
+### `/api/v0/file/upload_file` (POST multipart)
 
-- `code === 0` 才算 HTTP 层 + 协议层 OK
-- `data.biz_code === 0`（或 `undefined`）才算业务层 OK
-- `biz_code !== 0` 时 `biz_msg` 是错误码字符串（如 `SETTINGS_NOT_FOUND`）
+`form-data: file=<binary>, session_id=<uuid?>`。返回 `biz_data` 含上传后文件 id /
+状态 / 解析进度等（未做强 schema）。
 
-实现见 `bridges/common.js::unwrapDeepseekResponse`。
+### `/api/v0/share/create` / `/api/v0/share/delete` / `/api/v0/share/list`
 
-## 鉴权
+- `create`：`{chat_session_id, title?, message_ids?}` → 返回 `share_id` 等
+- `delete`：`{share_id}`（**irreversible**，auto-backup 暂未实现，因为 share 数据本身可重建）
+- `list`：GET `?count=N` → `{shares: [{share_id, hint, created_at, chat_session_id, ...}]}`
 
-- **首选**：`Authorization: Bearer <token>` —— `token` 从 `localStorage.getItem('userToken')` parse JSON 取 `.value` 字段
-- 兜底：`credentials: 'include'`（cookie 同源）
-- 实现见 `bridges/common.js::readUserToken` + `fetchDeepseekJson`
+### `/api/v0/users/update_settings` (POST)
 
-## 接口表（v0.1 用到的）
+请求体直接是 `{<key>: <value>}` 字典；服务端按白名单接受。本工具不做 key 限制，
+LLM 自负责传合法 key。
 
-### `GET /api/v0/users/current` —— 登录态
+### `/api/v0/client/settings?did=<uuid>&scope=main|model`
 
-用途：登录态判定、用户基本信息。
-
-`biz_data` 字段（实际观察到的，类型已验证）：
-
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| `id` | string (uuid) | 用户 id |
-| `email` | string | 已 mask 形式（如 `21****77@qq.com`） |
-| `mobile_number` | string | 已 mask 形式（如 `135******61`） |
-| `area_code` | string | 区号（如 `+86`） |
-| `status` | number | 账户状态 |
-| `id_profile.provider` | string | `WECHAT` / `EMAIL` / ... |
-| `id_profile.id` | string | 第三方 id |
-| `id_profile.name` | string | 显示名 |
-| `id_profile.picture` | string (url) | 头像 URL（`https://static.deepseek.com/user-avatar/...`） |
-| `id_profile.locale` | string | `zh_CN` / ... |
-| `id_profiles[]` | array | 全部已绑定的 provider 列表 |
-| `chat.is_muted` | number | 是否被静音 |
-| `chat.mute_until` | number? | 静音到期时间戳 |
-| `has_legacy_chat_history` | boolean | 是否存在旧版历史 |
-| `need_birthday` | boolean | 是否需要补生日 |
-
-未登录时该接口返回 401（HTTP 层），bridge 优雅降级为 `{loggedIn:false}`。
-
-### `GET /api/v0/chat_session/fetch_page?count=N[&before_seq_id=<seqId>]` —— 历史会话列表
-
-> 注：服务端只接受 GET，POST 会返回 405 Method Not Allowed（已实测）。
-
-`biz_data` 字段：
-
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| `chat_sessions[]` | array | 会话列表，每条含下方子字段 |
-| `chat_sessions[].id` | string (uuid) | 会话 id |
-| `chat_sessions[].seq_id` | number | 服务器侧排序键 / 分页游标 |
-| `chat_sessions[].title` | string | 会话标题（系统生成或用户重命名） |
-| `chat_sessions[].title_type` | string | `SYSTEM` / `USER` |
-| `chat_sessions[].updated_at` | number (unix sec, float) | 最近更新时间戳 |
-| `chat_sessions[].inserted_at` | number (unix sec, float) | 创建时间戳 |
-| `chat_sessions[].pinned` | boolean | 是否置顶 |
-| `chat_sessions[].model_type` | string | `default` / `expert` / ... |
-| `chat_sessions[].agent` | string | 通常为 `chat` |
-| `chat_sessions[].version` | number | 内部版本号 |
-| `chat_sessions[].current_message_id` | number | 当前消息计数 |
-| `has_more` | boolean | 是否还有下一页 |
-
-分页：用最后一条的 `seq_id` 作为下次的 `before_seq_id`（v0.1 实现见 `home-bridge.js::listSessions` 末尾的 `cursor` 字段）。
-
-### `GET /api/v0/chat/history_messages?chat_session_id=<uuid>` —— 单会话历史消息
-
-`biz_data` 字段：
-
-#### `chat_session`（与 fetch_page 字段重叠 + 多了 `is_empty`）
-
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| `id` / `seq_id` / `title` / `title_type` / `model_type` / `pinned` / `agent` / `version` / `current_message_id` / `updated_at` / `inserted_at` | 同上 | |
-| `is_empty` | boolean | 会话是否还没有消息 |
-
-#### `chat_messages[]`
-
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| `message_id` | number | 同会话内自增 |
-| `parent_id` | number? | 父消息 id（首条用户消息为 null） |
-| `model` | string | 实际使用的模型，可能为 `''`（系统未填） |
-| `role` | string | `USER` / `ASSISTANT` / `SYSTEM` |
-| `status` | string | `FINISHED` / `INTERRUPTED` / `STREAMING` / ... |
-| `thinking_enabled` | boolean | 是否开启了"深度思考" |
-| `search_enabled` | boolean | 是否开启了"联网搜索" |
-| `ban_edit` | boolean | 不可编辑（系统消息 / 已结算） |
-| `ban_regenerate` | boolean | 不可重新生成 |
-| `accumulated_token_usage` | number | 累计 token 用量 |
-| `inserted_at` | number (unix sec, float) | 创建时间戳 |
-| `content` | string | **正文** —— bridge 端 `contentMaxLen` 截断后再到 Node 端 `redact.js` 处理 |
-| `incomplete_message` | string? | 流式中断时的残留 |
-| `feedback` | object? | 用户对该回复的反馈 |
-| `files[]` | array | 附件列表 |
-| `thinking_content` | string? | "深度思考"内容 —— 同样走 redact |
-| `thinking_elapsed_secs` | number? | 思考耗时 |
-| `search_status` | object? | 搜索状态 |
-| `search_results[]` | array? | 搜索结果数组 |
-| `tips[]` | array | 小贴士 |
-
-bridge 端 `normalizeChatMessage`（见 `bridges/common.js`）只输出业务必要字段；`files` 仅出 `length`，`feedback` 仅出 `boolean`，避免传超大对象。
-
-### `GET /api/v0/client/settings?scope=main|model` —— 客户端配置 / 模型列表
-
-v0.2 起被 `deepseek_chat_settings_view` 工具消费（READ 档，永不写）。
-
-`biz_data` 在主页未登录时返回 `null`（`biz_code: 1, biz_msg: SETTINGS_NOT_FOUND`），登录态下返回模型 / feature flag 列表。
-
-`scope=main` 时（典型字段子集，仅类型）：
-
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| `features[]` | array | 功能开关列表（含 `name`/`enabled`/`scope`） |
-| `defaults.model` | string | 当前账号默认 model 标识 |
-| `defaults.thinking_enabled` | boolean | 默认是否开"深度思考" |
-| `defaults.search_enabled` | boolean | 默认是否开"联网搜索" |
-| `experiment_flags` | object | 实验组 flag 字典 |
-
-`scope=model` 时（典型字段子集，仅类型）：
-
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| `models[]` | array | 可用 model 列表 |
-| `models[].id` | string | model 标识（如 `deepseek-chat` / `deepseek-reasoner`） |
-| `models[].name` | string | 显示名 |
-| `models[].available` | boolean | 当前账号是否可用 |
-| `models[].quota.*` | object? | 配额信息（按 model 而异） |
-
-> 字段名因服务端版本而异，bridge 透传 `biz_data` 不做强 schema。本工具语义是
-> "**只读快照**"，永远不会触发写或切换。
-
----
-
-## 永不消费的端点（DESTRUCTIVE）
-
-下列端点**已在浏览器里观察到**，但本 skill 永不调用（与 SKILL.md 的「明确不做的事」一一对应）：
-
-| 端点 | 方法 | 危害 |
-|---|---|---|
-| `/api/v0/chat/completion` | POST | 发消息 / 触发流式生成 / 扣 token |
-| `/api/v0/chat/stop_stream` | POST | 停止流（也算业务写） |
-| `/api/v0/chat/edit_message` | POST | 编辑用户消息 |
-| `/api/v0/chat/create_pow_challenge` | POST | 生成 PoW（发消息前置） |
-| `/api/v0/chat_session/create` | POST | 新建会话 |
-| `/api/v0/chat_session/delete` 或 `_archive`（推测） | POST | 删除 / 归档会话 |
-
-`bridges/common.js::fetchDeepseekJson` 不做端点白名单（开放 GET / POST），但所有 bridge 方法只调上面 v0.1 三个 GET。**新增端点务必先经过 `xhr-log` 踩点 + 安全分级评审**。
+`did` 来自 `localStorage.__ds_remote_feature_did`（chat 页加载后自动写入）。
+返回 model 列表 / feature flag / 当前 chat 默认设置。
+**已知限制**：浏览器扩展隔离上下文 fetch 偶现 `SETTINGS_NOT_FOUND`，bridge 优雅降级。
 
 ---
 
 ## URL 路径模式（导航用）
 
-| 路径 | 含义 | 用途 |
-|---|---|---|
-| `/` | 主页 / 新对话 | `deepseek_navigate_home` |
-| `/a/chat/s/<uuid>` | 单会话页 | `deepseek_navigate_session` |
-| `/sign_in` | 登录页 | 仅观察，不操作 |
-| `/settings` 或类似 | 设置页 | v0.2 才考虑 |
+| 路径 | 含义 |
+|---|---|
+| `/` | 主页 / 新对话 |
+| `/a/chat/s/<uuid>` | 单会话页 |
+| `/sign_in` | 登录页（仅观察） |
 
-`bridges/common.js::navigateLocation` 在跳转前硬卡 `(?:^|\.)deepseek\.com$`，跨域 URL 直接 `cross_origin_navigation_forbidden`。
+`bridges/common.js::navigateLocation` 跳转前硬卡 `(?:^|\.)deepseek\.com$`，
+跨域 URL 直接 `cross_origin_navigation_forbidden`（与 destructive 解锁正交）。
+
+---
+
+## 端点踩点方法
+
+1. webpack scan：从 `document.scripts` 拉每个 bundle，`RegExp(/\/api\/v0\/[\w\/]+/g)` 提取
+2. 手动操作 + `node index.js xhr-log --filter "/api/v0/"` 抓 request URL
+3. 对未知 schema：bridge 端 `session.callRaw` 直接 `fetch(POST)` 试不同字段名 / 值，
+   看 422 `{detail:[{loc:"body.<field>"}]}` 反推
+
+DESTRUCTIVE 测试纪律：**只在专属 TEST_SID 内做**，结束 `delete_session` 收尾。

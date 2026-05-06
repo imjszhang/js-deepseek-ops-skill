@@ -2,6 +2,54 @@
 
 本仓库的版本历史与根因索引。SKILL.md 只保留前向规划，所有"已发生"的变更与事故复盘都迁到这里。
 
+## v0.3.0 — **BREAKING：安全姿态反转，DESTRUCTIVE 全量解锁**
+
+把 skill 从只读升级为完整 ops 工具。`SKILL.md` 的"明确不做的事"段整段废弃；不再做调用前 confirm；改为 **audit 模式**：destructive 调用直接执行，但完整请求体 + 响应强制写入 `audit.jsonl`；`delete_session` / `unshare_session` 等不可逆操作前自动 backup。
+
+### 新增 AI 工具（共 14 个，3 READ + 11 DESTRUCTIVE）
+
+**READ**：`deepseek_list_files` / `deepseek_list_shares`，外加 `chat_page_state` 等已有
+
+**DESTRUCTIVE,reversible**：`deepseek_create_session` / `deepseek_rename_session` / `deepseek_pin_session` / `deepseek_unpin_session` / `deepseek_feedback_message` / `deepseek_stop_stream` / `deepseek_upload_file` / `deepseek_share_session` / `deepseek_update_user_settings`
+
+**DESTRUCTIVE,irreversible**：`deepseek_delete_session`（auto-backup） / `deepseek_unshare_session`
+
+**DESTRUCTIVE,cost**：`deepseek_send_message` / `deepseek_edit_message` / `deepseek_regenerate_message`
+
+### 新增基础设施
+
+- **`lib/audit.js`** （新）：`writeAuditEntry(runContext, {tool, args, result, sideEffect, backupPath})` 写完整请求体到 `~/.js-eyes/skill-records/<skill>/audit/audit.jsonl`；`writeBackup(runContext, {resource, id, snapshot})` 写到 `backups/<resource>-<id>-<ts>.json`
+- **`lib/runTool.js`** 加 destructive 分支：调用前若 `sideEffect==='irreversible'` 跑 `prefetchBackup` 函数拿当前 snapshot 落盘；调用后强制 `writeAuditEntry`，**跳过 transformResult 的 redact**（destructive 调用的 prompt 原文必须保留作 audit 凭证）；response 多回 `destructive / sideEffect / backupPath` 字段
+- **`skill.contract.js`** 加 `makeDestructiveExecutor` 与 `prefetchSessionBackup` 工厂；`TOOL_DEFINITIONS` 加 `destructive` / `sideEffect` 字段；`projectTool` 投射出新字段
+- **`lib/commands.js`** 加 `kind: 'destructive'` 命令族，外加 `parseArgv` 新选项：`--thinking / --search / --include-content / --parent / --timeout / --comment / --mime / --session / --title / --format / --out / --agent`
+- **`cli/index.js`** 加 `runDestructiveCommand`（携带 `prefetchBackup` 闭包）+ `runExportSessionLocal`（本地导出 JSON / Markdown）
+- **`bridges/chat-bridge.js`** VERSION `0.2.1 → 0.3.4`：加 14+ destructive 方法；`fetchDeepseekJson` 已支持 POST/body；`solvePowChallenge` 调 `/api/v0/chat/create_pow_challenge`；`sendMessage` / `editMessage` / `regenerateMessage` 走原生 `fetch + ReadableStream` 解 SSE，聚合后一次性返回 `{messageId, contentLength, contentSha256, usage, chunkCount, ...}`，默认不返正文；新增 `getSessionSnapshot` 给 `delete_session` 的 prefetchBackup 用
+- **`bridges/home-bridge.js`** VERSION `0.2.0 → 0.3.2`：镜像加上 `createSession / renameSession / pinSession / unpinSession / deleteSession / shareSession / unshareSession / listShares / updateUserSettings / getSessionSnapshot`，让 home 页也能跑会话管理而不需先 navigate
+- **`package.json`** version `0.2.x → 0.3.0`，scripts 加 14+ 条新 CLI
+
+### 端点踩点新发现
+
+webpack scan 拿到完整端点目录（36 项），落 `docs/dev/api-endpoints.md` 全景表。Schema 试探确认：
+
+- `chat_session/update_title` / `update_pinned` 对空会话回 `EMPTY_CHAT_SESSION`（服务端约束，非 bug）
+- `chat/message_feedback` 真实 schema：`feedback_type ∈ {"GOOD", "BAD", null} + feedback_tag + description`，CLI 兼容数值 `1/-1/0`
+- `chat/completion` 必需 `X-DS-PoW-Response` header（注意大小写）
+- `share/list` 是 GET，必带 `?count=N`
+
+### 已知限制（v0.3）
+
+- **PoW solver 未实现**：`/chat/completion` 等需要 `DeepSeekHashV1` 算法（基于 `static/sha3_wasm_bg.*.wasm` worker）；bridge 端复刻成本高，当前透传 `answer:0`，server 回 `40301 INVALID_POW_RESPONSE`，工具返回 `error.code='pow_required'`，骨架 + audit 链路完整可用
+- **`stop_stream` schema 待补**：bridge 已注册端点但请求体可能少字段，422 表明需要 active stream 时再踩
+- **平台子域 API key**：`platform.deepseek.com` 子域工具未实现（需新增 page profile + bridge）
+
+### 测试纪律
+
+所有 destructive 测试在专属 TEST_SID 内做：
+- 创建：`create_session` 拿到新 sessionId
+- 修改：`rename_session` / `pin_session` / `feedback_message`
+- 删除：`delete_session`（验证 backup 文件落盘）
+- 真实 `delete_session` 调用 audit jsonl 实测含 `backup_path` 字段，backup 文件可读
+
 ## v0.2.1 — `chat_settings_view` did 参数 + 已知限制
 
 联机烟测发现 `/api/v0/client/settings` 实际请求需要 `did=<deviceId>` 参数（`xhr-log` 抓出真实形态），bridge v0.2.0 漏带。

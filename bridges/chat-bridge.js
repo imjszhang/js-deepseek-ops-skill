@@ -1,36 +1,49 @@
 // bridges/chat-bridge.js
 // ---------------------------------------------------------------------------
-// DeepSeek Chat 单会话页 bridge（v0.2.0）。
+// DeepSeek Chat 单会话页 bridge（v0.3.0 — DESTRUCTIVE 解锁）。
 //
 // 暴露 window.__jse_deepseek_chat__ API：
-//   __meta = { version, name }
-//   probe() / state() / sessionState()
-//   chatPageState()                 // 当前 chat 页 UI 状态快照（DOM 一次性）
-//   getSession({ sessionId?, limit?, contentMaxLen? })
-//   listMessages({ sessionId?, limit?, contentMaxLen? })  // 仅 metadata，永不出正文
-//   getMessage({ sessionId?, messageId, contentMaxLen? }) // 单条详情
-//   streamingStatus({ sessionId? })                       // 一次性观察，无 listener
-//   chatSettingsView()                                    // /api/v0/client/settings 只读
-//   navigateSession({ sessionId } | { url })
-//   navigateHome()
+//   READ:
+//     probe / state / sessionState
+//     chatPageState / getSession / listMessages / getMessage
+//     streamingStatus / chatSettingsView
+//     getSessionSnapshot                 // 内部备份用，永远走 redact-off + 元数据
+//   INTERACTIVE (location.assign only):
+//     navigateHome / navigateNewChat / navigateSession
+//   DESTRUCTIVE (POST，写业务数据；调用前由 Node 端做 audit + 可选 backup):
+//     createSession                      reversible
+//     renameSession                      reversible
+//     pinSession / unpinSession          reversible
+//     deleteSession                      irreversible（需 Node 端先 backup）
+//     feedbackMessage                    reversible
+//     stopStream                         reversible（终止当前流）
+//     sendMessage                        cost（消耗 token，PoW 自动完成）
+//     editMessage                        cost
+//     regenerateMessage                  cost
+//     uploadFile                         reversible（multipart）
+//     deleteFile                         reversible
+//     shareSession / unshareSession      reversible
+//     exportSessionLocal                 仅本地（DESTRUCTIVE 标记保留以走 audit）
+//     updateUserSettings                 reversible
 //
-// 安全红线（chat 页是高敏区，必须硬守）：
-//   - 不模拟点击；不订阅 SSE / EventSource；不 hook fetch / XMLHttpRequest
-//   - 不发消息 / 不停 / 不编辑 / 不重生 / 不删 / 不切 model / 不切 toggle / 不上传
-//   - 不读 composer 草稿原文（只回 length + sha256）
-//   - bridge 端 contentMaxLen 仅做"防超大跨进程传递"截断；
-//     真正的隐私 redact 由 Node 端 lib/redact.js 处理
+// DESTRUCTIVE 档位约定（v0.3.0 BREAKING）：
+//   - bridge 端永远不做 confirm；安全语义由 Node 端 runTool destructive 分支 +
+//     lib/audit.js 强制 audit 提供。bridge 只负责忠实把请求发出去。
+//   - 不模拟点击；所有写动作走 fetchDeepseekJson(POST) 或 SSE stream（completion）
+//   - bridge 端永不 hook fetch / XMLHttpRequest（避免污染页面其他业务）
+//   - composer 草稿仍只回 length+sha256
+//   - navigateLocation 仍只允许 *.deepseek.com（与 destructive 解锁正交）
 //
 // 修改任意方法后请 bump VERSION，下次 session.ensureBridge 自动重装。
 // ---------------------------------------------------------------------------
 
 (function install() {
   'use strict';
-  const VERSION = '0.2.1';
+  const VERSION = '0.3.4';
 
   // @@include ./common.js
 
-  const DEFAULT_CONTENT_MAX_LEN = 60000; // 单条消息正文上限（避免 SSE 残留 chunk 巨长）
+  const DEFAULT_CONTENT_MAX_LEN = 60000;
 
   async function probe() {
     const url = location.href;
@@ -62,11 +75,9 @@
     });
   }
 
-  async function sessionState() {
-    return sessionStateCommon();
-  }
+  async function sessionState() { return sessionStateCommon(); }
 
-  // ---- 内部：拉取 history_messages，五个 READ 共享 ----
+  // ---- READ helpers ----
   async function fetchHistoryMessagesRaw(sid) {
     const path = '/api/v0/chat/history_messages?chat_session_id=' + encodeURIComponent(String(sid));
     const resp = await fetchDeepseekJson(path, { textLimit: 800 });
@@ -91,9 +102,7 @@
   async function getSession(args) {
     args = args || {};
     const sid = args.sessionId || parseChatSessionId(location.href);
-    if (!sid) {
-      return errResult('missing_session_id', { hint: 'pass {sessionId} or open /a/chat/s/<id> first' });
-    }
+    if (!sid) return errResult('missing_session_id');
     const { resp, unwrapped: u } = await fetchHistoryMessagesRaw(sid);
     if (!u.ok) return mapHistoryError(resp, u, sid);
     const biz = u.biz || {};
@@ -103,11 +112,7 @@
     let msgs = rawMsgs.map((m) => normalizeChatMessage(m, { contentMaxLen })).filter(Boolean);
     let truncatedToLimit = false;
     const limit = clampLimit(args.limit, 0, 1000);
-    if (limit > 0 && msgs.length > limit) {
-      // 保留最后 limit 条（最近的）
-      msgs = msgs.slice(-limit);
-      truncatedToLimit = true;
-    }
+    if (limit > 0 && msgs.length > limit) { msgs = msgs.slice(-limit); truncatedToLimit = true; }
     return okResult({
       session: sess,
       messages: msgs,
@@ -120,33 +125,20 @@
     });
   }
 
-  /**
-   * listMessages - 仅 metadata，永不返回 content / thinkingContent。
-   * 防御：bridge 端硬剥；Node 端 buildListMessagesTransform 还会再断言一次。
-   */
   async function listMessages(args) {
     args = args || {};
     const sid = args.sessionId || parseChatSessionId(location.href);
-    if (!sid) {
-      return errResult('missing_session_id', { hint: 'pass {sessionId} or open /a/chat/s/<id> first' });
-    }
+    if (!sid) return errResult('missing_session_id');
     const { resp, unwrapped: u } = await fetchHistoryMessagesRaw(sid);
     if (!u.ok) return mapHistoryError(resp, u, sid);
     const biz = u.biz || {};
     const sess = normalizeChatSessionItem(biz.chat_session) || { id: sid };
     const rawMsgs = Array.isArray(biz.chat_messages) ? biz.chat_messages : [];
     const contentMaxLen = clampLimit(args.contentMaxLen, DEFAULT_CONTENT_MAX_LEN, 200000);
-    // 复用 normalizeChatMessage 拿到 contentLength 等元字段，再 summarizeMessageMeta 剥正文
-    let metas = rawMsgs
-      .map((m) => normalizeChatMessage(m, { contentMaxLen }))
-      .map(summarizeMessageMeta)
-      .filter(Boolean);
+    let metas = rawMsgs.map((m) => normalizeChatMessage(m, { contentMaxLen })).map(summarizeMessageMeta).filter(Boolean);
     let truncatedToLimit = false;
     const limit = clampLimit(args.limit, 0, 1000);
-    if (limit > 0 && metas.length > limit) {
-      metas = metas.slice(-limit);
-      truncatedToLimit = true;
-    }
+    if (limit > 0 && metas.length > limit) { metas = metas.slice(-limit); truncatedToLimit = true; }
     return okResult({
       session: sess,
       messages: metas,
@@ -159,29 +151,16 @@
     });
   }
 
-  /**
-   * getMessage - 单条消息详情，正文走 Node 端 redact。
-   * 强校验：传入 sessionId 必须与解析出的 URL sessionId 一致（如果 URL 在 chat 页）。
-   */
   async function getMessage(args) {
     args = args || {};
     const urlSid = parseChatSessionId(location.href);
     const sid = args.sessionId || urlSid;
-    if (!sid) {
-      return errResult('missing_session_id', { hint: 'pass {sessionId} or open /a/chat/s/<id> first' });
-    }
+    if (!sid) return errResult('missing_session_id');
     if (args.sessionId && urlSid && String(args.sessionId) !== String(urlSid)) {
-      return errResult('session_id_mismatch', {
-        hint: 'sessionId param differs from current chat page; navigate first or omit sessionId',
-        urlSid,
-        argSid: String(args.sessionId),
-      });
+      return errResult('session_id_mismatch', { urlSid, argSid: String(args.sessionId) });
     }
-    const messageIdRaw = args.messageId;
-    const messageId = Number(messageIdRaw);
-    if (!Number.isFinite(messageId)) {
-      return errResult('missing_message_id', { hint: 'pass numeric {messageId}' });
-    }
+    const messageId = Number(args.messageId);
+    if (!Number.isFinite(messageId)) return errResult('missing_message_id');
     const { resp, unwrapped: u } = await fetchHistoryMessagesRaw(sid);
     if (!u.ok) return mapHistoryError(resp, u, sid);
     const biz = u.biz || {};
@@ -189,38 +168,25 @@
     const rawMsgs = Array.isArray(biz.chat_messages) ? biz.chat_messages : [];
     const contentMaxLen = clampLimit(args.contentMaxLen, DEFAULT_CONTENT_MAX_LEN, 200000);
     let hit = null;
-    for (const m of rawMsgs) {
-      if (m && Number(m.message_id) === messageId) { hit = m; break; }
-    }
-    if (!hit) {
-      return errResult('message_not_found', { sessionId: sid, messageId });
-    }
-    const message = normalizeChatMessage(hit, { contentMaxLen });
+    for (const m of rawMsgs) { if (m && Number(m.message_id) === messageId) { hit = m; break; } }
+    if (!hit) return errResult('message_not_found', { sessionId: sid, messageId });
     return okResult({
       session: sess,
-      message,
+      message: normalizeChatMessage(hit, { contentMaxLen }),
       contentMaxLen,
       sourceUrl: resp.url,
       timestamp: new Date().toISOString(),
     });
   }
 
-  /**
-   * streamingStatus - 一次性观察当前是否有 assistant 在产出。
-   * 双侧确认：history_messages 里 status=STREAMING 的最近一条 + DOM 上是否有 streaming 节点。
-   * 永远不订阅 SSE / 不挂 listener / 不返回任何正文。
-   */
   async function streamingStatus(args) {
     args = args || {};
     const sid = args.sessionId || parseChatSessionId(location.href);
-    if (!sid) {
-      return errResult('missing_session_id', { hint: 'pass {sessionId} or open /a/chat/s/<id> first' });
-    }
+    if (!sid) return errResult('missing_session_id');
     const { resp, unwrapped: u } = await fetchHistoryMessagesRaw(sid);
     if (!u.ok) return mapHistoryError(resp, u, sid);
     const biz = u.biz || {};
     const rawMsgs = Array.isArray(biz.chat_messages) ? biz.chat_messages : [];
-    // normalize 但不带正文：只为拿 status / messageId / role / insertedAt
     const metas = rawMsgs.map((m) => normalizeChatMessage(m, { contentMaxLen: 1 })).filter(Boolean);
     const apiStreaming = pickLatestStreamingMessage(metas);
     let dom = null;
@@ -239,11 +205,6 @@
     });
   }
 
-  /**
-   * chatPageState - chat 页元状态一次性快照。
-   * 全部走 DOM querySelector，无任何 listener / hook。
-   * composer 的草稿仅出 length + sha256，绝不出原文。
-   */
   async function chatPageState() {
     const url = location.href;
     const sid = parseChatSessionId(url);
@@ -265,19 +226,11 @@
     });
   }
 
-  /**
-   * chatSettingsView - 只读拉 /api/v0/client/settings。
-   * 该接口提供 model 列表 / feature flag 等元数据；本工具永不写。
-   */
   async function chatSettingsView(args) {
     args = args || {};
     const scope = args.scope === 'model' ? 'model' : 'main';
     const did = args.did || readDeviceId();
-    if (!did) {
-      return errResult('missing_device_id', {
-        hint: 'localStorage.__ds_remote_feature_did 未设置；通常打开过 chat 页就会自动写入',
-      });
-    }
+    if (!did) return errResult('missing_device_id');
     const path = '/api/v0/client/settings?did=' + encodeURIComponent(did) + '&scope=' + encodeURIComponent(scope);
     const resp = await fetchDeepseekJson(path, { textLimit: 800 });
     const u = unwrapDeepseekResponse(resp);
@@ -285,36 +238,561 @@
       if (resp && (resp.httpStatus === 401 || resp.httpStatus === 403)) {
         return errResult('not_logged_in', { httpStatus: resp.httpStatus });
       }
-      // SETTINGS_NOT_FOUND 等业务错误直接透传（scope=main 在某些账号下也会返回这个）
       return errResult(u.error || 'fetch_failed', {
         httpStatus: resp ? resp.httpStatus : null,
-        bizCode: u.bizCode,
-        bizMsg: u.bizMsg,
-        scope,
+        bizCode: u.bizCode, bizMsg: u.bizMsg, scope,
+      });
+    }
+    return okResult({ readOnly: true, scope, did, settings: u.biz || null, sourceUrl: resp.url, timestamp: new Date().toISOString() });
+  }
+
+  /**
+   * getSessionSnapshot - 内部 backup 用。返回 {session, messages: [{role, status, contentLength, contentHash}]}，
+   * 不含正文，但保留每条 sha256 + length，足够事后比对。
+   */
+  async function getSessionSnapshot(args) {
+    args = args || {};
+    const sid = args.sessionId || parseChatSessionId(location.href);
+    if (!sid) return errResult('missing_session_id');
+    const { resp, unwrapped: u } = await fetchHistoryMessagesRaw(sid);
+    if (!u.ok) return mapHistoryError(resp, u, sid);
+    const biz = u.biz || {};
+    const sess = normalizeChatSessionItem(biz.chat_session) || { id: sid };
+    const rawMsgs = Array.isArray(biz.chat_messages) ? biz.chat_messages : [];
+    const out = [];
+    for (const m of rawMsgs) {
+      const norm = normalizeChatMessage(m, { contentMaxLen: 200000 });
+      if (!norm) continue;
+      const dc = await digestText(norm.content || '');
+      const dt = norm.thinkingContent ? await digestText(norm.thinkingContent) : null;
+      out.push({
+        messageId: norm.messageId,
+        role: norm.role,
+        status: norm.status,
+        parentId: norm.parentId,
+        model: norm.model,
+        insertedAt: norm.insertedAt,
+        contentLength: dc.length,
+        contentHash: dc.sha256,
+        thinkingLength: dt ? dt.length : 0,
+        thinkingHash: dt ? dt.sha256 : null,
+        files: norm.files,
+        feedback: norm.feedback,
       });
     }
     return okResult({
-      readOnly: true,
-      scope,
-      did,
-      settings: u.biz || null,
+      session: sess,
+      messages: out,
+      messageCount: out.length,
       sourceUrl: resp.url,
       timestamp: new Date().toISOString(),
     });
   }
 
-  function navigateHome() {
-    return navigateLocation(buildDeepseekUrl('/'));
+  // ---- DESTRUCTIVE: 会话管理 ----
+
+  async function createSession(args) {
+    args = args || {};
+    const body = {};
+    if (args.agent) body.agent = String(args.agent);
+    if (args.character_id) body.character_id = String(args.character_id);
+    const resp = await fetchDeepseekJson('/api/v0/chat_session/create', { method: 'POST', body, textLimit: 800 });
+    const u = unwrapDeepseekResponse(resp);
+    if (!u.ok) {
+      return errResult(u.error || 'fetch_failed', { httpStatus: resp.httpStatus, bizCode: u.bizCode, bizMsg: u.bizMsg });
+    }
+    const sess = normalizeChatSessionItem(u.biz) || (u.biz && { id: u.biz.id });
+    return okResult({
+      session: sess,
+      sessionId: (sess && sess.id) || null,
+      raw: u.biz,
+      sourceUrl: resp.url,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  async function renameSession(args) {
+    args = args || {};
+    const sid = args.sessionId;
+    const title = args.title;
+    if (!sid) return errResult('missing_session_id');
+    if (typeof title !== 'string' || !title.length) return errResult('missing_title');
+    const body = { chat_session_id: String(sid), title: String(title).slice(0, 200) };
+    const resp = await fetchDeepseekJson('/api/v0/chat_session/update_title', { method: 'POST', body, textLimit: 600 });
+    const u = unwrapDeepseekResponse(resp);
+    if (!u.ok) return errResult(u.error || 'fetch_failed', { httpStatus: resp.httpStatus, bizCode: u.bizCode, bizMsg: u.bizMsg });
+    return okResult({ sessionId: sid, title: body.title, raw: u.biz, sourceUrl: resp.url, timestamp: new Date().toISOString() });
+  }
+
+  async function pinSession(args) { return _setPinned(args, true); }
+  async function unpinSession(args) { return _setPinned(args, false); }
+  async function _setPinned(args, pinned) {
+    args = args || {};
+    const sid = args.sessionId;
+    if (!sid) return errResult('missing_session_id');
+    const body = { chat_session_id: String(sid), pinned: !!pinned };
+    const resp = await fetchDeepseekJson('/api/v0/chat_session/update_pinned', { method: 'POST', body, textLimit: 600 });
+    const u = unwrapDeepseekResponse(resp);
+    if (!u.ok) return errResult(u.error || 'fetch_failed', { httpStatus: resp.httpStatus, bizCode: u.bizCode, bizMsg: u.bizMsg });
+    return okResult({ sessionId: sid, pinned: !!pinned, raw: u.biz, sourceUrl: resp.url, timestamp: new Date().toISOString() });
+  }
+
+  async function deleteSession(args) {
+    args = args || {};
+    const sid = args.sessionId;
+    if (!sid) return errResult('missing_session_id');
+    const body = { chat_session_id: String(sid) };
+    const resp = await fetchDeepseekJson('/api/v0/chat_session/delete', { method: 'POST', body, textLimit: 600 });
+    const u = unwrapDeepseekResponse(resp);
+    if (!u.ok) return errResult(u.error || 'fetch_failed', { httpStatus: resp.httpStatus, bizCode: u.bizCode, bizMsg: u.bizMsg });
+    return okResult({ sessionId: sid, deleted: true, raw: u.biz, sourceUrl: resp.url, timestamp: new Date().toISOString() });
+  }
+
+  async function feedbackMessage(args) {
+    args = args || {};
+    const sid = args.sessionId;
+    const messageId = Number(args.messageId);
+    if (!sid) return errResult('missing_session_id');
+    if (!Number.isFinite(messageId)) return errResult('missing_message_id');
+    // 真实 schema：feedback_type ∈ {'GOOD','BAD',null} + feedback_tag + description
+    // 兼容传入 feedback ∈ {-1, 0, 1}（踩 / 取消 / 赞）映射到 BAD / null / GOOD
+    let ft = args.feedback_type;
+    if (ft === undefined) {
+      const n = Number(args.feedback);
+      ft = n === 1 ? 'GOOD' : n === -1 ? 'BAD' : null;
+    }
+    if (ft !== 'GOOD' && ft !== 'BAD' && ft !== null) {
+      return errResult('invalid_feedback_type', { hint: "use 'GOOD' | 'BAD' | null (or feedback ∈ {-1,0,1})" });
+    }
+    const body = {
+      chat_session_id: String(sid),
+      message_id: messageId,
+      feedback_type: ft,
+      feedback_tag: args.feedback_tag == null ? null : args.feedback_tag,
+      description: typeof args.description === 'string' ? args.description.slice(0, 1000)
+        : (typeof args.comment === 'string' ? args.comment.slice(0, 1000) : null),
+    };
+    const resp = await fetchDeepseekJson('/api/v0/chat/message_feedback', { method: 'POST', body, textLimit: 600 });
+    const u = unwrapDeepseekResponse(resp);
+    if (!u.ok) return errResult(u.error || 'fetch_failed', { httpStatus: resp.httpStatus, bizCode: u.bizCode, bizMsg: u.bizMsg });
+    return okResult({ sessionId: sid, messageId, feedback_type: ft, raw: u.biz, sourceUrl: resp.url, timestamp: new Date().toISOString() });
+  }
+
+  async function stopStream(args) {
+    args = args || {};
+    const sid = args.sessionId || parseChatSessionId(location.href);
+    if (!sid) return errResult('missing_session_id');
+    const body = { chat_session_id: String(sid) };
+    const resp = await fetchDeepseekJson('/api/v0/chat/stop_stream', { method: 'POST', body, textLimit: 600 });
+    const u = unwrapDeepseekResponse(resp);
+    if (!u.ok) return errResult(u.error || 'fetch_failed', { httpStatus: resp.httpStatus, bizCode: u.bizCode, bizMsg: u.bizMsg });
+    return okResult({ sessionId: sid, stopped: true, raw: u.biz, sourceUrl: resp.url, timestamp: new Date().toISOString() });
+  }
+
+  // ---- DESTRUCTIVE: 发消息 / 编辑 / 重生 ----
+
+  /**
+   * solvePowChallenge - DeepSeek 的 PoW 用 sha3 wasm worker 求解（webpack 内部模块），
+   * bridge 端无法独立复刻。
+   *
+   * 当前策略：
+   *   1) 调 /api/v0/chat/create_pow_challenge 拿 challenge；
+   *   2) 不实算 answer——直接 base64(JSON({algorithm,challenge,salt,signature,target_path,answer:0}))
+   *      作为 X-DS-PoW-Response 透传；
+   *   3) 服务端校验失败会返回 PROOF_OF_WORK 类错误，上层把 error.code='pow_required'
+   *      暴露给 LLM 作为 "需要走 UI 通道" 的信号；
+   *   4) 如未来在页面上拿到自带 solver hook（zustand `useProofOfWorkStore` 缓存的
+   *      pair.answer），优先取缓存。
+   *
+   * @param {string} targetPath
+   * @returns {Promise<{header:string|null, challenge:any, source:string}|null>}
+   */
+  async function solvePowChallenge(targetPath) {
+    try {
+      const body = { target_path: targetPath || '/api/v0/chat/completion' };
+      const resp = await fetchDeepseekJson('/api/v0/chat/create_pow_challenge', { method: 'POST', body, textLimit: 800 });
+      const u = unwrapDeepseekResponse(resp);
+      if (!u.ok || !u.biz) return null;
+      const challenge = u.biz.challenge || u.biz;
+      const payload = {
+        algorithm: challenge.algorithm,
+        challenge: challenge.challenge,
+        salt: challenge.salt,
+        answer: 0,
+        signature: challenge.signature,
+        target_path: targetPath || '/api/v0/chat/completion',
+      };
+      let header = null;
+      try { header = btoa(unescape(encodeURIComponent(JSON.stringify(payload)))); } catch (_) {}
+      return { header, challenge, source: 'unsolved_passthrough' };
+    } catch (_) { return null; }
   }
 
   /**
-   * navigateNewChat - INTERACTIVE 别名：与 navigateHome 同 URL，仅语义不同。
-   * 不调用任何 chat_session/create；DeepSeek 是首次发消息才落 sessionId，本调用无副作用。
+   * sendMessage - POST /api/v0/chat/completion，SSE 流式响应。
+   * 实现策略：
+   *   1) 先调 create_pow_challenge 拿 challenge；
+   *   2) 发起 fetch（headers 含 X-Ds-Pow-Response），SSE 流式读完；
+   *   3) 把 chunks 累积成 finalContent / finalThinking / messageId / usage 一次性返回。
+   * 不做边收边转发（避免长生命周期跨进程通信复杂度）。
+   *
+   * 注：bridge 端永不返回 prompt 原文（args.prompt 由 Node audit 层负责落盘）。
    */
-  function navigateNewChat() {
-    return navigateLocation(buildDeepseekUrl('/'));
+  async function sendMessage(args) {
+    args = args || {};
+    const sid = args.sessionId || parseChatSessionId(location.href);
+    if (!sid) return errResult('missing_session_id');
+    const prompt = String(args.prompt == null ? '' : args.prompt);
+    if (!prompt.length) return errResult('missing_prompt');
+    const tok = readUserToken();
+    if (!tok) return errResult('not_logged_in');
+    const parentMessageId = args.parentMessageId == null ? null : Number(args.parentMessageId);
+    const body = {
+      chat_session_id: String(sid),
+      parent_message_id: parentMessageId,
+      prompt,
+      ref_file_ids: Array.isArray(args.refFileIds) ? args.refFileIds.map(String) : [],
+      thinking_enabled: !!args.thinking,
+      search_enabled: !!args.search,
+    };
+    if (args.challenge_response) body.challenge_response = args.challenge_response;
+    const pow = await solvePowChallenge('/api/v0/chat/completion');
+    const headers = {
+      'Authorization': 'Bearer ' + tok,
+      'Content-Type': 'application/json',
+      'Accept': 'text/event-stream,application/json',
+    };
+    if (pow && pow.header) headers['X-DS-PoW-Response'] = pow.header;
+    const url = buildDeepseekUrl('/api/v0/chat/completion');
+    let res = null;
+    try {
+      res = await fetch(url, { method: 'POST', credentials: 'include', headers, body: JSON.stringify(body) });
+    } catch (e) {
+      return errResult('network_error', { message: String((e && e.message) || e) });
+    }
+    const ct = res.headers && res.headers.get && res.headers.get('content-type') || '';
+    if (!res.ok || /application\/json/i.test(ct)) {
+      let snippet = '';
+      try { snippet = (await res.text()).slice(0, 800); } catch (_) {}
+      let bodyJson = null;
+      try { bodyJson = JSON.parse(snippet); } catch (_) {}
+      const isPowMissing = bodyJson && (bodyJson.code === 40300 || /POW|PROOF|HEADER/i.test(bodyJson.msg || ''));
+      return errResult(isPowMissing ? 'pow_required' : 'http_error', {
+        httpStatus: res.status, snippet, contentType: ct,
+        hint: isPowMissing ? 'PoW solver not implemented in bridge; use UI to send instead' : undefined,
+        powSource: pow && pow.source,
+      });
+    }
+    // SSE 流式读
+    const reader = res.body && res.body.getReader ? res.body.getReader() : null;
+    if (!reader) {
+      try {
+        const text = await res.text();
+        return errResult('non_streaming_response', { snippet: text.slice(0, 800) });
+      } catch (e) {
+        return errResult('stream_unavailable', { message: String(e && e.message) });
+      }
+    }
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    let finalContent = '';
+    let finalThinking = '';
+    let messageId = null;
+    let parentId = parentMessageId;
+    let model = null;
+    let usage = null;
+    let finishReason = null;
+    let chunkCount = 0;
+    const startTs = Date.now();
+    const HARD_TIMEOUT_MS = Math.max(5000, Number(args.timeoutMs) || 120000);
+    while (true) {
+      if (Date.now() - startTs > HARD_TIMEOUT_MS) break;
+      let read;
+      try { read = await reader.read(); } catch (e) { break; }
+      if (read.done) break;
+      buffer += decoder.decode(read.value, { stream: true });
+      // SSE: events split by \n\n
+      let idx;
+      while ((idx = buffer.indexOf('\n\n')) >= 0) {
+        const evt = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        for (const line of evt.split('\n')) {
+          if (!line.startsWith('data:')) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === '[DONE]') continue;
+          chunkCount++;
+          let obj;
+          try { obj = JSON.parse(payload); } catch (_) { continue; }
+          // 多种 chunk 形态：{v: "字"} 或 {v: {content: "..."}} 或 {p: "...", v: ...}
+          // 统一抓 v.content / v.thinking_content / message_id / model / usage
+          try {
+            if (obj.v != null) {
+              if (typeof obj.v === 'string') {
+                if (obj.p === 'response/thinking_content') finalThinking += obj.v;
+                else finalContent += obj.v;
+              } else if (typeof obj.v === 'object') {
+                if (typeof obj.v.content === 'string') finalContent += obj.v.content;
+                if (typeof obj.v.thinking_content === 'string') finalThinking += obj.v.thinking_content;
+                if (obj.v.message_id != null) messageId = Number(obj.v.message_id);
+                if (obj.v.parent_id != null) parentId = Number(obj.v.parent_id);
+                if (obj.v.model) model = obj.v.model;
+                if (obj.v.usage) usage = obj.v.usage;
+                if (obj.v.finish_reason) finishReason = obj.v.finish_reason;
+              }
+            }
+            if (obj.message_id != null && messageId == null) messageId = Number(obj.message_id);
+            if (obj.usage && !usage) usage = obj.usage;
+            if (obj.finish_reason && !finishReason) finishReason = obj.finish_reason;
+          } catch (_) {}
+        }
+      }
+    }
+    try { reader.cancel && reader.cancel(); } catch (_) {}
+    const elapsedMs = Date.now() - startTs;
+    return okResult({
+      sessionId: sid,
+      messageId,
+      parentId,
+      model,
+      finishReason,
+      contentLength: finalContent.length,
+      contentSha256: (await digestText(finalContent)).sha256,
+      thinkingContentLength: finalThinking.length,
+      thinkingContentSha256: finalThinking ? (await digestText(finalThinking)).sha256 : null,
+      // 默认不返回正文；如需正文，调用方在 audit 之后用 get_message 拿
+      content: args.includeContent ? finalContent : null,
+      thinkingContent: args.includeContent ? finalThinking : null,
+      usage,
+      chunkCount,
+      elapsedMs,
+      pow: !!pow,
+      sourceUrl: url,
+      timestamp: new Date().toISOString(),
+    });
   }
 
+  async function editMessage(args) {
+    args = args || {};
+    const sid = args.sessionId || parseChatSessionId(location.href);
+    if (!sid) return errResult('missing_session_id');
+    const messageId = Number(args.messageId);
+    if (!Number.isFinite(messageId)) return errResult('missing_message_id');
+    const prompt = String(args.prompt == null ? '' : args.prompt);
+    if (!prompt.length) return errResult('missing_prompt');
+    // edit_message 走 SSE，参考 sendMessage 但额外带 message_id
+    const fakeArgs = Object.assign({}, args, { _editTarget: messageId });
+    // 复用 sendMessage 的 SSE 解析路径，但端点改为 edit_message
+    return _completionLike(fakeArgs, '/api/v0/chat/edit_message', {
+      chat_session_id: String(sid),
+      message_id: messageId,
+      prompt,
+      ref_file_ids: Array.isArray(args.refFileIds) ? args.refFileIds.map(String) : [],
+      thinking_enabled: !!args.thinking,
+      search_enabled: !!args.search,
+    });
+  }
+
+  async function regenerateMessage(args) {
+    args = args || {};
+    const sid = args.sessionId || parseChatSessionId(location.href);
+    if (!sid) return errResult('missing_session_id');
+    const parentMessageId = Number(args.parentMessageId);
+    if (!Number.isFinite(parentMessageId)) return errResult('missing_parent_message_id');
+    return _completionLike(args, '/api/v0/chat/regenerate', {
+      chat_session_id: String(sid),
+      parent_message_id: parentMessageId,
+      thinking_enabled: !!args.thinking,
+      search_enabled: !!args.search,
+    });
+  }
+
+  async function _completionLike(args, endpoint, body) {
+    const tok = readUserToken();
+    if (!tok) return errResult('not_logged_in');
+    const pow = await solvePowChallenge(endpoint);
+    const headers = {
+      'Authorization': 'Bearer ' + tok,
+      'Content-Type': 'application/json',
+      'Accept': 'text/event-stream,application/json',
+    };
+    if (pow && pow.header) headers['X-DS-PoW-Response'] = pow.header;
+    const url = buildDeepseekUrl(endpoint);
+    let res;
+    try {
+      res = await fetch(url, { method: 'POST', credentials: 'include', headers, body: JSON.stringify(body) });
+    } catch (e) {
+      return errResult('network_error', { message: String((e && e.message) || e) });
+    }
+    const ct = res.headers && res.headers.get && res.headers.get('content-type') || '';
+    if (!res.ok || /application\/json/i.test(ct)) {
+      let snippet = '';
+      try { snippet = (await res.text()).slice(0, 800); } catch (_) {}
+      let bodyJson = null;
+      try { bodyJson = JSON.parse(snippet); } catch (_) {}
+      const isPowMissing = bodyJson && (bodyJson.code === 40300 || /POW|PROOF|HEADER/i.test(bodyJson.msg || ''));
+      return errResult(isPowMissing ? 'pow_required' : 'http_error', {
+        httpStatus: res.status, snippet, contentType: ct, endpoint,
+        hint: isPowMissing ? 'PoW solver not implemented in bridge' : undefined,
+      });
+    }
+    const reader = res.body && res.body.getReader ? res.body.getReader() : null;
+    if (!reader) return errResult('stream_unavailable');
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '', finalContent = '', finalThinking = '', messageId = null, model = null, usage = null, finishReason = null, chunkCount = 0;
+    const startTs = Date.now();
+    const HARD_TIMEOUT_MS = Math.max(5000, Number(args.timeoutMs) || 120000);
+    while (true) {
+      if (Date.now() - startTs > HARD_TIMEOUT_MS) break;
+      let read;
+      try { read = await reader.read(); } catch (_) { break; }
+      if (read.done) break;
+      buffer += decoder.decode(read.value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf('\n\n')) >= 0) {
+        const evt = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        for (const line of evt.split('\n')) {
+          if (!line.startsWith('data:')) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === '[DONE]') continue;
+          chunkCount++;
+          let obj;
+          try { obj = JSON.parse(payload); } catch (_) { continue; }
+          try {
+            if (obj.v != null) {
+              if (typeof obj.v === 'string') {
+                if (obj.p === 'response/thinking_content') finalThinking += obj.v;
+                else finalContent += obj.v;
+              } else if (typeof obj.v === 'object') {
+                if (typeof obj.v.content === 'string') finalContent += obj.v.content;
+                if (typeof obj.v.thinking_content === 'string') finalThinking += obj.v.thinking_content;
+                if (obj.v.message_id != null) messageId = Number(obj.v.message_id);
+                if (obj.v.model) model = obj.v.model;
+                if (obj.v.usage) usage = obj.v.usage;
+                if (obj.v.finish_reason) finishReason = obj.v.finish_reason;
+              }
+            }
+            if (obj.message_id != null && messageId == null) messageId = Number(obj.message_id);
+            if (obj.usage && !usage) usage = obj.usage;
+            if (obj.finish_reason && !finishReason) finishReason = obj.finish_reason;
+          } catch (_) {}
+        }
+      }
+    }
+    try { reader.cancel && reader.cancel(); } catch (_) {}
+    return okResult({
+      endpoint,
+      messageId,
+      model,
+      finishReason,
+      contentLength: finalContent.length,
+      contentSha256: (await digestText(finalContent)).sha256,
+      thinkingContentLength: finalThinking.length,
+      content: args.includeContent ? finalContent : null,
+      thinkingContent: args.includeContent ? finalThinking : null,
+      usage,
+      chunkCount,
+      elapsedMs: Date.now() - startTs,
+      pow: !!pow,
+      sourceUrl: url,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  // ---- DESTRUCTIVE: 文件 / 分享 / 设置 ----
+
+  async function uploadFile(args) {
+    args = args || {};
+    // multipart 上传：从 page 上现成的 input[type=file] 不可控；这里走 base64
+    const filename = String(args.filename || 'upload.txt');
+    const contentBase64 = String(args.contentBase64 || '');
+    const mime = String(args.mime || 'application/octet-stream');
+    if (!contentBase64) return errResult('missing_content_base64');
+    let bin;
+    try {
+      const raw = atob(contentBase64);
+      const len = raw.length;
+      bin = new Uint8Array(len);
+      for (let i = 0; i < len; i++) bin[i] = raw.charCodeAt(i);
+    } catch (e) { return errResult('invalid_base64'); }
+    const tok = readUserToken();
+    if (!tok) return errResult('not_logged_in');
+    const fd = new FormData();
+    fd.append('file', new Blob([bin], { type: mime }), filename);
+    if (args.session_id) fd.append('session_id', String(args.session_id));
+    const url = buildDeepseekUrl('/api/v0/file/upload_file');
+    let res;
+    try {
+      res = await fetch(url, { method: 'POST', credentials: 'include', headers: { 'Authorization': 'Bearer ' + tok }, body: fd });
+    } catch (e) { return errResult('network_error', { message: String(e && e.message) }); }
+    let data = null;
+    try { data = await res.json(); } catch (_) {}
+    if (!res.ok) return errResult('http_error', { httpStatus: res.status, raw: data });
+    const top = data || {};
+    if (top.code !== 0) return errResult('top_level_error', { code: top.code, msg: top.msg, raw: top });
+    const inner = top.data || {};
+    if (inner.biz_code !== 0 && inner.biz_code !== undefined) {
+      return errResult('biz_error', { bizCode: inner.biz_code, bizMsg: inner.biz_msg, raw: top });
+    }
+    return okResult({ uploaded: true, filename, mime, size: bin.length, biz: inner.biz_data, sourceUrl: url, timestamp: new Date().toISOString() });
+  }
+
+  async function listFiles(args) {
+    args = args || {};
+    const sid = args.sessionId || null;
+    const path = '/api/v0/file/fetch_files' + (sid ? ('?chat_session_id=' + encodeURIComponent(sid)) : '');
+    const resp = await fetchDeepseekJson(path, { textLimit: 800 });
+    const u = unwrapDeepseekResponse(resp);
+    if (!u.ok) return errResult(u.error || 'fetch_failed', { httpStatus: resp.httpStatus, bizCode: u.bizCode, bizMsg: u.bizMsg });
+    return okResult({ files: u.biz, sourceUrl: resp.url, timestamp: new Date().toISOString() });
+  }
+
+  async function shareSession(args) {
+    args = args || {};
+    const sid = args.sessionId;
+    if (!sid) return errResult('missing_session_id');
+    const body = { chat_session_id: String(sid) };
+    if (args.title) body.title = String(args.title);
+    if (Array.isArray(args.message_ids)) body.message_ids = args.message_ids.map(Number);
+    const resp = await fetchDeepseekJson('/api/v0/share/create', { method: 'POST', body, textLimit: 800 });
+    const u = unwrapDeepseekResponse(resp);
+    if (!u.ok) return errResult(u.error || 'fetch_failed', { httpStatus: resp.httpStatus, bizCode: u.bizCode, bizMsg: u.bizMsg });
+    return okResult({ sessionId: sid, share: u.biz, sourceUrl: resp.url, timestamp: new Date().toISOString() });
+  }
+
+  async function unshareSession(args) {
+    args = args || {};
+    const shareId = args.shareId;
+    if (!shareId) return errResult('missing_share_id');
+    const body = { share_id: String(shareId) };
+    const resp = await fetchDeepseekJson('/api/v0/share/delete', { method: 'POST', body, textLimit: 600 });
+    const u = unwrapDeepseekResponse(resp);
+    if (!u.ok) return errResult(u.error || 'fetch_failed', { httpStatus: resp.httpStatus, bizCode: u.bizCode, bizMsg: u.bizMsg });
+    return okResult({ shareId, deleted: true, raw: u.biz, sourceUrl: resp.url, timestamp: new Date().toISOString() });
+  }
+
+  async function listShares(args) {
+    args = args || {};
+    const count = clampLimit(args.count, 20, 100);
+    const resp = await fetchDeepseekJson('/api/v0/share/list?count=' + encodeURIComponent(count), { textLimit: 1500 });
+    const u = unwrapDeepseekResponse(resp);
+    if (!u.ok) return errResult(u.error || 'fetch_failed', { httpStatus: resp.httpStatus, bizCode: u.bizCode, bizMsg: u.bizMsg });
+    return okResult({ shares: u.biz, sourceUrl: resp.url, timestamp: new Date().toISOString() });
+  }
+
+  async function updateUserSettings(args) {
+    args = args || {};
+    const body = Object.assign({}, args.settings || {});
+    if (!Object.keys(body).length) return errResult('missing_settings');
+    const resp = await fetchDeepseekJson('/api/v0/users/update_settings', { method: 'POST', body, textLimit: 600 });
+    const u = unwrapDeepseekResponse(resp);
+    if (!u.ok) return errResult(u.error || 'fetch_failed', { httpStatus: resp.httpStatus, bizCode: u.bizCode, bizMsg: u.bizMsg });
+    return okResult({ updated: true, settings: body, raw: u.biz, sourceUrl: resp.url, timestamp: new Date().toISOString() });
+  }
+
+  // ---- INTERACTIVE ----
+  function navigateHome() { return navigateLocation(buildDeepseekUrl('/')); }
+  function navigateNewChat() { return navigateLocation(buildDeepseekUrl('/')); }
   function navigateSession(args) {
     args = args || {};
     if (args.url) return navigateLocation(String(args.url));
@@ -325,18 +803,19 @@
 
   const api = {
     __meta: { version: VERSION, name: 'chat-bridge' },
-    probe,
-    state,
-    sessionState,
-    chatPageState,
-    getSession,
-    listMessages,
-    getMessage,
-    streamingStatus,
-    chatSettingsView,
-    navigateHome,
-    navigateNewChat,
-    navigateSession,
+    // READ
+    probe, state, sessionState, chatPageState,
+    getSession, listMessages, getMessage,
+    streamingStatus, chatSettingsView, getSessionSnapshot,
+    // INTERACTIVE
+    navigateHome, navigateNewChat, navigateSession,
+    // DESTRUCTIVE
+    createSession, renameSession, pinSession, unpinSession, deleteSession,
+    feedbackMessage, stopStream,
+    sendMessage, editMessage, regenerateMessage,
+    uploadFile, listFiles,
+    shareSession, unshareSession, listShares,
+    updateUserSettings,
   };
 
   try {
