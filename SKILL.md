@@ -124,7 +124,8 @@ metadata:
   - `findComposerSendButton`：composer 行 `.ds-icon-button--l` 最右、enabled
   - `findMessageActionRows`：`.ds-icon-button--m` 按 y 聚类，2 个=USER、≥4 个=ASSISTANT
   - `domEditMessage` 直接定位 last user `<textarea>`（非 readonly + 非空），改值后 DeepSeek 自动渲染"发送"按钮
-- **target 限制**：`dom_edit_message` / `dom_regenerate_message` 当前仅支持 `lastUser` / `lastAssistant`。历史早期消息因 `ds-virtual-list` 虚拟化而需要先精确滚动定位，暂未实现
+- **target 选择**：`dom_edit_message` / `dom_regenerate_message` 支持 `target=lastUser`/`lastAssistant`（默认）和 `target=byMessageId` + `messageId`。后者通过 `_locateMessageInVirtualList` 滚动虚拟列表 + 内容指纹定位历史消息（见 `bridges/chat-bridge.js` 同名函数）。**注意**：DeepSeek 编辑会创建新分支，已被替换的旧分支消息不在 UI 中渲染，对其调用会返回 `message_not_in_current_branch_or_dom` + 友好 hint
+- **同内容歧义**：当会话里多条同 role 消息内容完全相同时（如多次 regen 产生同样输出），content fingerprint 无法区分，会命中 DOM 中现存的任意一个。实际场景中消息内容差异大，几乎不会触发；如要绝对精确，可改用 messageId 在响应里反查 `resolvedTargetMessageId` 做事后核对
 - **`stop_stream` schema 待补**：bridge 已注册端点；422 表明缺字段，需要在有 active stream 时踩点完整 body
 - **平台子域 API key**：`platform.deepseek.com` 子域的 API key 管理未实现（需要新增 page profile + bridge）
 - **空会话约束**：`update_title` / `update_pinned` 对完全无消息的会话回 `EMPTY_CHAT_SESSION`，是服务端业务约束
@@ -161,7 +162,9 @@ node index.js navigate-home && node index.js dom-send-message "新会话第一�
 node index.js dom-send-message "在当前会话追问"                                  # 当前 chat 页追加
 node index.js dom-send-message "..." --no-wait                                   # 不等流式结束
 node index.js dom-edit-message "改写后的 user 内容" --session <sid>              # 编辑最后 user 消息并重生
+node index.js dom-edit-message "改写..." --session <sid> --message-id 7          # 编辑历史 user 消息（自动滚虚拟列表定位）
 node index.js dom-regenerate-message --session <sid>                             # 重生最后 assistant 消息
+node index.js dom-regenerate-message --session <sid> --message-id 8              # 重生历史 assistant 消息
 node index.js dom-stop-stream --session <sid>                                    # 流式中点停止
 
 # 本地导出（无副作用）

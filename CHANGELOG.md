@@ -2,6 +2,51 @@
 
 本仓库的版本历史与根因索引。SKILL.md 只保留前向规划，所有"已发生"的变更与事故复盘都迁到这里。
 
+## v0.3.2 — DOM 模式 byMessageId（解锁虚拟化历史消息）
+
+v0.3.1 的 `dom_edit_message` / `dom_regenerate_message` 仅支持 `lastUser` / `lastAssistant`，因 `.ds-virtual-list` 离屏剔除 + DeepSeek 无 `data-message-id` 锚点。本版补齐 `target=byMessageId` 支持，可对会话内任意消息（含远 offscreen 历史）操作。
+
+### 新增能力
+
+- `deepseek_dom_edit_message` / `deepseek_dom_regenerate_message` 增 `target: 'byMessageId' | 'lastUser' | 'lastAssistant'` + `messageId` 参数
+- CLI 增 `--message-id <N>`（也接受 `--msg-id`）
+
+### 关键算法 `_locateMessageInVirtualList`（chat-bridge）
+
+1. 从 `history_messages` API 拉 target 消息，取 content head：短内容（≤8 字符）整段当指纹，长内容取前 30 字
+2. **role 反推**：`.ds-message` 气泡 + `findMessageActionRows()` 聚类。每个气泡找 `bubble.bottom` **下方**最近的 action row，其 role 即为该气泡的 role。**坑**：最初用 `abs(y)` 最近会把高 ASSISTANT 气泡误配到上方 USER row（USER row y=144 离 ASSISTANT bubble y=188 比 ASSISTANT row y=331 还近 100px），改为"bubble.bottom 之下"才正确
+3. **内容匹配 + 滚动 sweep**：当前 viewport 找不到 → 从 0 按 `clientHeight - 100` 步长扫到底，直到匹配
+4. **Edit 历史 USER 路径**：定位到 `.ds-message` 气泡后，找气泡邻近 USER action row，点 `buttons[1]`（编辑按钮），等内联 textarea 出现，setReactInputValue + 点"发送"
+5. **Edit 最后 USER 路径**（沿用 v0.3.1）：直接在天然 textarea 上 setReactInputValue
+6. **死分支检测**：DeepSeek edit 会 fork 新分支，旧分支消息不在 DOM。返回 `message_not_in_current_branch_or_dom` + 友好 hint
+
+### 验证记录（2026-05-06，全部已 cleanup）
+
+| 场景 | 工具 | messageId | usedPath | 耗时 | 结果 |
+|---|---|---|---|---|---|
+| 编辑最早历史 USER | `dom-edit-message` | msg1 | `byMessageId_via_edit_button` | 11.6s | 新分支 msg7+8 |
+| 重生当前分支 ASSISTANT | `dom-regenerate-message` | msg8 | `byMessageId` | 6.4s | msg9 新生 |
+| 重生**死分支** ASSISTANT | `dom-regenerate-message` | msg2 | n/a | 立刻 | `message_not_in_current_branch_or_dom` |
+| 编辑**远 offscreen** USER (y=-5288) | `dom-edit-message` | msg7 | `byMessageId_via_edit_button` | 3.9s | 自动滚虚拟列表后 fork 新分支 msg14+15 |
+
+第二批多轮对话回归（4 轮 / 6 消息会话上验证 byMessageId + 默认路径互通）：
+
+| 场景 | usedPath | 耗时 | 备注 |
+|---|---|---|---|
+| 历史 ASSIST regen by id | `byMessageId` | 3.8s | 创建兄弟 regen msg7 |
+| 历史 USER edit by id | `byMessageId_via_edit_button` | 5.0s | fork msg8+9 |
+| 当前分支 last USER edit by id | `byMessageId_via_edit_button` (`isLast=true` 自动检测) | 5.0s | fork msg10+11 |
+| `lastAssistant` 默认路径 regen | `lastAssistant` | 3.8s | msg12 兄弟 regen |
+| 同内容歧义场景（多个 "R1" 气泡）| 命中任一 R1 ASSIST | — | content fingerprint 不区分相同内容；可用 `resolvedTargetMessageId` 事后核对 |
+
+### 基础设施
+
+- `bridges/chat-bridge.js` VERSION `0.3.9 → 0.3.12`：`_locateMessageInVirtualList`、`_findEditSendButton`、`domEditMessage` / `domRegenerateMessage` 加 `byMessageId` 分支
+- `skill.contract.js`：参数 schema 加 `target` enum 和 `messageId`
+- `lib/commands.js`：`parseArgv` 加 `--message-id` / `--msg-id`，CLI toArgs 自动 `target` 切换
+
+---
+
 ## v0.3.1 — DOM 模式（绕开 PoW 限制）
 
 `/api/v0/chat/completion` / `edit_message` / `regenerate` 三个端点都强制 PoW（DeepSeekHashV1 / WASM 实现），bridge 内复刻代价过高，导致 v0.3.0 的对应工具在生产环境只能拿到 `pow_required`。同时 API 直创的会话在标题未生成前不会显示在 UI 侧栏，对人工/agent 协作不友好。本版引入 DOM 模式，让浏览器自己解 PoW、自己渲染会话。

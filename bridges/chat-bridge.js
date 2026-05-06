@@ -39,7 +39,7 @@
 
 (function install() {
   'use strict';
-  const VERSION = '0.3.9';
+  const VERSION = '0.3.12';
 
   // @@include ./common.js
 
@@ -911,6 +911,95 @@
   //   USER 行: [0]=复制, [1]=编辑
   //   ASSISTANT 行: [0]=复制, [1]=重新生成, [2]=喜欢, [3]=不喜欢, [4]=分享/引用
 
+  // ---------------------------------------------------------------------------
+  // _locateMessageInVirtualList
+  //
+  // 解决 ds-virtual-list 离屏剔除问题：通过滚动 + 内容匹配定位任意 messageId。
+  //
+  // 算法：
+  //   1. 从 history_messages API 拿 target.content 和 role
+  //   2. 取 content 前 15 字符做 head 指纹
+  //   3. 在当前 viewport 内找匹配（USER 优先 textarea，其次 .ds-message 气泡；
+  //      ASSISTANT 找最小的 textContent.includes(head) 容器）
+  //   4. 若未命中，从顶部按 (clientHeight - 100) 步长扫到底
+  //
+  // 返回 { ok, found:{mode:'textarea'|'bubble', el}, target, role } 或 { error }
+  async function _locateMessageInVirtualList(sid, messageId) {
+    const fetched = await fetchHistoryMessagesRaw(sid);
+    const all = (fetched.unwrapped && fetched.unwrapped.biz && fetched.unwrapped.biz.chat_messages) || [];
+    const target = all.find((m) => Number(m.message_id) === Number(messageId));
+    if (!target) return { error: 'message_id_not_in_session', messageId };
+    const role = String(target.role || '').toUpperCase();
+    const content = String(target.content || '').replace(/\s+/g, ' ').trim();
+    if (!content.length) return { error: 'message_has_no_content_to_match', messageId, role, status: target.status };
+    // 内容短时整段当 head（避免 "A1" 这样 2 字符指纹歧义；不超过 30 字防止过长）
+    const head = content.length <= 8 ? content : content.slice(0, 30);
+
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const vl = document.querySelector('.ds-virtual-list');
+    if (!vl) return { error: 'no_virtual_list' };
+
+    // 通过 action row 聚类反推 bubble 的 role。
+    // 关键观察：DeepSeek 把 action row 放在 bubble 下方（USER 紧贴底；ASSISTANT
+    // 在 markdown 内容下方）。所以"取 bubble.bottom 之下、最近的下一行"才对。
+    // 简单 abs(y) 最近会把高 ASSISTANT bubble 错配到上方 USER 的 action row。
+    function bubbleRole(bubble, rows) {
+      const r = bubble.getBoundingClientRect();
+      const sorted = rows.slice().sort((a, b) => a.y - b.y);
+      for (const row of sorted) {
+        if (row.y >= r.bottom - 40) return row.role;
+      }
+      return null;
+    }
+
+    function tryFind() {
+      const rows = findMessageActionRows();
+      // .ds-message 是气泡容器（USER + ASSISTANT 都用），role 靠邻近 action row 反推
+      const bubbles = Array.from(document.querySelectorAll('.ds-message')).filter((el) => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      });
+      const matches = bubbles.filter((b) => {
+        const t = (b.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!t.includes(head)) return false;
+        return bubbleRole(b, rows) === role;
+      });
+      // 取 textContent 最长的 → 完整 bubble 而不是其中某个内联 span
+      matches.sort((a, b) => (b.textContent || '').length - (a.textContent || '').length);
+      // 但若过长（远超 content），降级取最短匹配
+      const reasonable = matches.find((m) => (m.textContent || '').length <= Math.max(800, content.length * 5 + 400));
+      if (reasonable) return { mode: 'bubble', el: reasonable };
+      if (matches[0]) return { mode: 'bubble', el: matches[0] };
+
+      // USER 兜底：last user textarea
+      if (role === 'USER') {
+        const tas = Array.from(document.querySelectorAll('textarea'))
+          .filter((t) => !t.readOnly && !t.disabled && t.value && t.value.includes(head));
+        if (tas[0]) return { mode: 'textarea', el: tas[0] };
+      }
+      return null;
+    }
+
+    let found = tryFind();
+    if (found) return { ok: true, found, target, role, scrollTopUsed: vl.scrollTop };
+
+    const step = Math.max(200, vl.clientHeight - 100);
+    const positions = [0];
+    for (let s = step; s < vl.scrollHeight; s += step) positions.push(s);
+    positions.push(vl.scrollHeight);
+    for (const sT of positions) {
+      vl.scrollTop = sT;
+      await sleep(350);
+      found = tryFind();
+      if (found) return { ok: true, found, target, role, scrollTopUsed: sT };
+    }
+    return {
+      error: 'message_not_in_current_branch_or_dom',
+      hint: '若该 messageId 属于已被 edit 替换的旧分支，UI 不再显示，DOM 找不到对应气泡',
+      sH: vl.scrollHeight, cH: vl.clientHeight, headTried: head, role,
+    };
+  }
+
   async function _findActionRow(target, opts) {
     opts = opts || {};
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -949,23 +1038,37 @@
     return { row, rowsSummary: rows.map((r) => ({ y: Math.round(r.y), role: r.role, btnCount: r.buttons.length })) };
   }
 
+  // ---------------------------------------------------------------------------
+  // _findEditSendButton - 编辑模式 textarea 下方的"发送"按钮（class 含
+  // ds-basic-button--primary 或文本含发送）。USER 编辑 textarea 与 composer
+  // textarea 都用同一种按钮，靠 y-邻近度区分。
+  function _findEditSendButton(taEl) {
+    const taRect = taEl.getBoundingClientRect();
+    const cands = Array.from(document.querySelectorAll('.ds-basic-button, button, [role="button"]'))
+      .filter((b) => {
+        if (b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
+        const r = b.getBoundingClientRect();
+        if (r.width === 0) return false;
+        return r.y >= taRect.bottom - 30 && r.y <= taRect.bottom + 220;
+      });
+    const byCls = cands.find((b) => b.className && b.className.includes && b.className.includes('ds-basic-button--primary'));
+    if (byCls) return byCls;
+    return cands.find((b) => /发送|确认|Send|Confirm|提交/i.test(b.textContent || '')) || null;
+  }
+
   async function domEditMessage(args) {
     args = args || {};
     const prompt = String(args.prompt || '');
     if (!prompt.length) return errResult('missing_prompt');
     if (prompt.length > 50000) return errResult('prompt_too_long', { length: prompt.length });
     const target = args.target || 'lastUser';
-    if (target !== 'lastUser') return errResult('unsupported_target', { hint: '当前仅支持 target="lastUser"' });
+    if (target !== 'lastUser' && target !== 'byMessageId') return errResult('unsupported_target', { target });
+    if (target === 'byMessageId' && args.messageId == null) return errResult('missing_message_id_for_byMessageId');
 
     const sid = parseChatSessionId(location.href);
     if (!sid) return errResult('not_on_chat_session_page');
 
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-    // ---- 关键发现（2026-05）：DeepSeek chat 页里每条 USER 消息渲染为 inline
-    // <textarea> 且非 readonly。直接 setReactInputValue 修改值后，会立刻
-    // 在该 textarea 下方出现 [取消, 发送] 按钮组。无需点击任何"编辑"按钮。
-    // 因此 domEditMessage 跳过 action button，直接定位 user textarea + 替换值。
 
     const beforeFetch = await fetchHistoryMessagesRaw(sid);
     const beforeMessages = ((beforeFetch.unwrapped && beforeFetch.unwrapped.biz && beforeFetch.unwrapped.biz.chat_messages) || [])
@@ -973,53 +1076,83 @@
     const beforeLastUser = [...beforeMessages].reverse().find((m) => m.role === 'USER');
     const beforeMaxId = beforeMessages.reduce((m, x) => Math.max(m, Number(x.messageId) || 0), 0);
 
-    // 找 last user textarea（非 composer）：composer 通常带 placeholder，
-    // user msg textarea value 非空且能被 setter 写入
-    const tas = Array.from(document.querySelectorAll('textarea')).filter((t) => {
-      const r = t.getBoundingClientRect();
-      return r.width > 0 && !t.disabled && !t.readOnly && t.value && t.value.length > 0;
-    });
-    if (!tas.length) {
-      // 用户 msg 不在视口内 → 滚到 virtual list 末尾以渲出最后 user msg
-      const vl = document.querySelector('.ds-virtual-list');
-      if (vl) {
-        vl.scrollTop = Math.max(0, vl.scrollHeight - vl.clientHeight - 200);
-        await sleep(500);
-      }
-      const tas2 = Array.from(document.querySelectorAll('textarea')).filter((t) => {
+    // 路径选择：lastUser 走原来直接 textarea；byMessageId 走 _locateMessageInVirtualList
+    let editTa = null;
+    let usedPath = null;
+    let resolvedTargetMsgId = null;
+    let resolvedIsLast = false;
+
+    if (target === 'lastUser') {
+      // 直接路径：找当前 viewport 中能被 setter 写入的 user textarea（取最后一个）
+      const tas = Array.from(document.querySelectorAll('textarea')).filter((t) => {
         const r = t.getBoundingClientRect();
         return r.width > 0 && !t.disabled && !t.readOnly && t.value && t.value.length > 0;
       });
-      if (!tas2.length) return errResult('no_user_textarea_in_dom', { hint: 'last user msg row not rendered by virtual list' });
-      tas.push(...tas2);
-    }
-    // 取最后一个（最新的 user msg）
-    const userTa = tas[tas.length - 1];
-    userTa.scrollIntoView({ block: 'center', behavior: 'instant' });
-    await sleep(250);
+      if (!tas.length) {
+        const vl = document.querySelector('.ds-virtual-list');
+        if (vl) { vl.scrollTop = Math.max(0, vl.scrollHeight - vl.clientHeight - 200); await sleep(500); }
+        const tas2 = Array.from(document.querySelectorAll('textarea')).filter((t) => {
+          const r = t.getBoundingClientRect();
+          return r.width > 0 && !t.disabled && !t.readOnly && t.value && t.value.length > 0;
+        });
+        if (!tas2.length) return errResult('no_user_textarea_in_dom');
+        tas.push(...tas2);
+      }
+      editTa = tas[tas.length - 1];
+      usedPath = 'direct_textarea';
+      resolvedIsLast = true;
+      resolvedTargetMsgId = beforeLastUser ? beforeLastUser.messageId : null;
+    } else {
+      // byMessageId：定位 → 视情况点 edit 按钮转气泡为 textarea
+      const loc = await _locateMessageInVirtualList(sid, args.messageId);
+      if (loc.error) return errResult(loc.error, { detail: loc });
+      if (loc.role !== 'USER') return errResult('target_message_not_user', { role: loc.role });
+      resolvedTargetMsgId = Number(args.messageId);
+      // 是否是最后一条 USER：与 beforeLastUser.messageId 比对
+      resolvedIsLast = beforeLastUser && beforeLastUser.messageId === resolvedTargetMsgId;
 
-    userTa.focus();
-    setReactInputValue(userTa, prompt);
+      const { mode, el } = loc.found;
+      try { el.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch (_) {}
+      await sleep(300);
+
+      if (mode === 'textarea') {
+        editTa = el;
+        usedPath = 'byMessageId_textarea';
+      } else {
+        // 气泡 → 点击同行 USER action 按钮 [1]=编辑
+        const bubY = el.getBoundingClientRect().y;
+        const rows = findMessageActionRows();
+        const userRows = rows.filter((r) => r.role === 'USER');
+        if (!userRows.length) return errResult('no_user_action_rows_after_locate', { bubY });
+        userRows.sort((a, b) => Math.abs(a.y - bubY) - Math.abs(b.y - bubY));
+        const row = userRows[0];
+        if (!row || row.buttons.length < 2) return errResult('user_row_missing_edit_button', { rowY: row && row.y, btnCount: row ? row.buttons.length : 0 });
+        if (Math.abs(row.y - bubY) > 250) return errResult('nearest_user_row_too_far_from_bubble', { rowY: row.y, bubY });
+        row.buttons[1].click();
+        await sleep(400);
+        // 等内联 textarea 出现（在 bubble 附近，且新出现）
+        const taWait = await waitFor(() => {
+          const tas = Array.from(document.querySelectorAll('textarea')).filter((t) => {
+            if (t.readOnly || t.disabled || !t.value) return false;
+            const r = t.getBoundingClientRect();
+            return r.width > 0 && Math.abs(r.y - bubY) < 300;
+          });
+          return tas[0] || null;
+        }, { timeoutMs: 4000, intervalMs: 200 });
+        if (!taWait.ok) return errResult('inline_edit_textarea_did_not_appear');
+        editTa = taWait.value;
+        usedPath = 'byMessageId_via_edit_button';
+      }
+    }
+
+    editTa.scrollIntoView({ block: 'center', behavior: 'instant' });
+    await sleep(200);
+    editTa.focus();
+    setReactInputValue(editTa, prompt);
     await sleep(200);
 
-    // 等"发送"按钮出现（class 含 ds-basic-button--primary 或文本含发送/Send）
-    const sendBtnWait = await waitFor(() => {
-      const taRect = userTa.getBoundingClientRect();
-      const cands = Array.from(document.querySelectorAll('.ds-basic-button, button, [role="button"]'))
-        .filter((b) => {
-          if (b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
-          const r = b.getBoundingClientRect();
-          if (r.width === 0) return false;
-          // 必须在 textarea 下方 200px 内
-          return r.y >= taRect.bottom - 20 && r.y <= taRect.bottom + 200;
-        });
-      // 优先 primary class
-      const byCls = cands.find((b) => b.className && b.className.includes && b.className.includes('ds-basic-button--primary'));
-      if (byCls) return byCls;
-      const byText = cands.find((b) => /发送|确认|Send|Confirm|提交/i.test(b.textContent || ''));
-      return byText || null;
-    }, { timeoutMs: 4000, intervalMs: 200 });
-    if (!sendBtnWait.ok) return errResult('edit_send_button_not_appeared');
+    const sendBtnWait = await waitFor(() => _findEditSendButton(editTa), { timeoutMs: 4000, intervalMs: 200 });
+    if (!sendBtnWait.ok) return errResult('edit_send_button_not_appeared', { usedPath });
     sendBtnWait.value.click();
 
     let waitedFinish = false;
@@ -1054,7 +1187,10 @@
 
     return okResult({
       sessionId: sid,
-      target: 'lastUser',
+      target,
+      resolvedTargetMessageId: resolvedTargetMsgId,
+      resolvedIsLastUser: !!resolvedIsLast,
+      usedPath,
       editedUserMessageBefore: beforeLastUser,
       promptLength: prompt.length,
       promptPreview: prompt.slice(0, 80),
@@ -1068,21 +1204,48 @@
   async function domRegenerateMessage(args) {
     args = args || {};
     const target = args.target || 'lastAssistant';
-    if (target !== 'lastAssistant') return errResult('unsupported_target', { hint: '当前仅支持 target="lastAssistant"' });
+    if (target !== 'lastAssistant' && target !== 'byMessageId') return errResult('unsupported_target', { target });
+    if (target === 'byMessageId' && args.messageId == null) return errResult('missing_message_id_for_byMessageId');
 
     const sid = parseChatSessionId(location.href);
     if (!sid) return errResult('not_on_chat_session_page');
-
-    const found = await _findActionRow('lastAssistant');
-    if (found.error) return errResult(found.error, { rowsSummary: found.rowsSummary });
-    const row = found.row;
-    if (row.buttons.length < 2) return errResult('assistant_row_missing_regen_button', { btnCount: row.buttons.length });
-    const regenBtn = row.buttons[1]; // 实测槽位 1 = 重新生成
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
     const beforeFetch = await fetchHistoryMessagesRaw(sid);
     const beforeMessages = ((beforeFetch.unwrapped && beforeFetch.unwrapped.biz && beforeFetch.unwrapped.biz.chat_messages) || [])
       .map((m) => normalizeChatMessage(m, { contentMaxLen: 1 })).map(summarizeMessageMeta).filter(Boolean);
     const beforeLastAssistant = [...beforeMessages].reverse().find((m) => m.role === 'ASSISTANT');
+
+    let row = null;
+    let resolvedTargetMsgId = null;
+    let usedPath = null;
+    if (target === 'lastAssistant') {
+      const found = await _findActionRow('lastAssistant');
+      if (found.error) return errResult(found.error, { rowsSummary: found.rowsSummary });
+      row = found.row;
+      resolvedTargetMsgId = beforeLastAssistant ? beforeLastAssistant.messageId : null;
+      usedPath = 'lastAssistant';
+    } else {
+      const loc = await _locateMessageInVirtualList(sid, args.messageId);
+      if (loc.error) return errResult(loc.error, { detail: loc });
+      if (loc.role !== 'ASSISTANT') return errResult('target_message_not_assistant', { role: loc.role });
+      try { loc.found.el.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch (_) {}
+      await sleep(350);
+      const bubBottom = loc.found.el.getBoundingClientRect().bottom;
+      const rows = findMessageActionRows();
+      const aRows = rows.filter((r) => r.role === 'ASSISTANT');
+      if (!aRows.length) return errResult('no_assistant_action_rows_after_locate', { bubBottom });
+      // ASSISTANT action row 通常在内容下方 → 选 y > bubble.top - 50 且最接近 bubBottom 的一行
+      const bubTop = loc.found.el.getBoundingClientRect().top;
+      aRows.sort((a, b) => Math.abs(a.y - bubBottom) - Math.abs(b.y - bubBottom));
+      row = aRows[0];
+      if (!row) return errResult('assistant_action_row_pick_failed');
+      if (row.y < bubTop - 100) return errResult('nearest_assistant_row_above_bubble', { rowY: row.y, bubTop, bubBottom });
+      resolvedTargetMsgId = Number(args.messageId);
+      usedPath = 'byMessageId';
+    }
+    if (row.buttons.length < 2) return errResult('assistant_row_missing_regen_button', { btnCount: row.buttons.length });
+    const regenBtn = row.buttons[1];
 
     regenBtn.click();
 
@@ -1120,7 +1283,9 @@
 
     return okResult({
       sessionId: sid,
-      target: 'lastAssistant',
+      target,
+      resolvedTargetMessageId: resolvedTargetMsgId,
+      usedPath,
       regeneratedAssistantBefore: beforeLastAssistant,
       buttonClass: regenBtn.className || null,
       waitedFinish, finishElapsedMs,

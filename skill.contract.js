@@ -558,12 +558,13 @@ const TOOL_DEFINITIONS = [
   {
     name: 'deepseek_dom_edit_message',
     label: 'DeepSeek Ops: Edit Message via UI (DOM)',
-    description: '[DESTRUCTIVE,COST] DOM 模式编辑消息：定位 USER 行的"编辑"按钮，替换内容并触发重生。当前仅支持 target="lastUser"。绕开 PoW。',
+    description: '[DESTRUCTIVE,COST] DOM 模式编辑 USER 消息。target=lastUser 直接走最后一条；target=byMessageId + messageId 通过滚动虚拟列表 + 内容指纹定位历史消息（必要时点击 [edit] 按钮转气泡为 textarea）。',
     parameters: {
       type: 'object',
       properties: {
         prompt: { type: 'string', description: '替换后的 user 消息内容' },
-        target: { type: 'string', enum: ['lastUser'], default: 'lastUser' },
+        target: { type: 'string', enum: ['lastUser', 'byMessageId'], default: 'lastUser' },
+        messageId: { type: 'number', description: 'target=byMessageId 时必填' },
         waitForFinish: { type: 'boolean', default: true },
         finishTimeoutMs: { type: 'number' },
       },
@@ -579,11 +580,12 @@ const TOOL_DEFINITIONS = [
   {
     name: 'deepseek_dom_regenerate_message',
     label: 'DeepSeek Ops: Regenerate Message via UI (DOM)',
-    description: '[DESTRUCTIVE,COST] DOM 模式重生：定位 ASSISTANT 行的"重新生成"按钮并点击。当前仅支持 target="lastAssistant"。绕开 PoW。',
+    description: '[DESTRUCTIVE,COST] DOM 模式重生 ASSISTANT 消息。target=lastAssistant 直接最后一条；target=byMessageId + messageId 通过滚动虚拟列表 + 内容指纹定位历史消息后点 [regenerate]。',
     parameters: {
       type: 'object',
       properties: {
-        target: { type: 'string', enum: ['lastAssistant'], default: 'lastAssistant' },
+        target: { type: 'string', enum: ['lastAssistant', 'byMessageId'], default: 'lastAssistant' },
+        messageId: { type: 'number', description: 'target=byMessageId 时必填' },
         waitForFinish: { type: 'boolean', default: true },
         finishTimeoutMs: { type: 'number' },
       },
