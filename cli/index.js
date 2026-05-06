@@ -14,7 +14,9 @@ const {
   buildGetBranchPathTransform,
   buildListBranchPointsTransform,
 } = require('../lib/redact');
+const { formatAsMermaid, formatAsAscii } = require('../lib/treeFormat');
 const { ensureSkillRecordsReadme } = require('../lib/skillRecordsReadme');
+const fs = require('fs');
 
 function pickPage(commandName, opts) {
   if (opts.page) return opts.page;
@@ -226,11 +228,63 @@ async function runToolCommand(commandName, def, opts, positional) {
         transformResult,
       },
     });
+    // v0.4.1: --format mermaid|ascii 适用于 get-session-tree / get-branch-path
+    const wantsTreeFormat = (opts.format === 'mermaid' || opts.format === 'ascii');
+    if (wantsTreeFormat && (commandName === 'get-session-tree' || commandName === 'get-branch-path')
+        && response && response.ok && response.result) {
+      const tree = _resolveTreeForFormat(response.result, commandName);
+      if (tree) {
+        const text = opts.format === 'mermaid' ? formatAsMermaid(tree) : formatAsAscii(tree);
+        if (opts.out) {
+          fs.writeFileSync(opts.out, text, 'utf8');
+          process.stderr.write(`tree written to ${opts.out}\n`);
+        } else {
+          process.stdout.write(text);
+        }
+        return 0;
+      }
+    }
     printJson(response, opts);
     return response && response.ok === false ? 1 : 0;
   } finally {
     try { browser.disconnect(); } catch (_) {}
   }
+}
+
+// 把不同工具的 result 形态统一成 SessionTree-like 结构供 formatter 消费。
+function _resolveTreeForFormat(result, commandName) {
+  if (commandName === 'get-session-tree') {
+    if (result && result.nodes && result.rootMessageIds) return result;
+    return null;
+  }
+  if (commandName === 'get-branch-path') {
+    const msgs = Array.isArray(result.messages) ? result.messages : [];
+    if (!msgs.length) return null;
+    const nodes = Object.create(null);
+    for (let i = 0; i < msgs.length; i += 1) {
+      const m = msgs[i];
+      const id = m.messageId;
+      const parentId = i === 0 ? null : msgs[i - 1].messageId;
+      nodes[String(id)] = {
+        messageId: id, parentId,
+        role: m.role || '', status: m.status || '',
+        childrenIds: i === msgs.length - 1 ? [] : [msgs[i + 1].messageId],
+        depth: i, siblingIndex: 0, siblingCount: 1,
+        isOnActivePath: true, isBranchPoint: false,
+        isLeaf: i === msgs.length - 1,
+      };
+    }
+    return {
+      session: result.session || { id: null },
+      rootMessageIds: [msgs[0].messageId],
+      currentMessageId: msgs[msgs.length - 1].messageId,
+      activePathIds: msgs.map((m) => m.messageId),
+      branchPointIds: [],
+      nodes,
+      stats: { totalMessages: msgs.length },
+    };
+  }
+  return null;
 }
 
 // ---- 内部踩点：dom-dump / xhr-log（不注入 bridge，直接 callRaw）----

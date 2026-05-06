@@ -1,11 +1,12 @@
 {
   "name": "js-deepseek-ops-skill",
-  "version": "0.4.0",
-  "description": "DeepSeek Chat 全量自动化技能：READ + INTERACTIVE + DESTRUCTIVE 三档（v0.4.0：新增全分支树读取 get_session_tree / list_branch_points / get_branch_path）",
+  "version": "0.4.1",
+  "description": "DeepSeek Chat 全量自动化技能：READ + INTERACTIVE + DESTRUCTIVE 三档（v0.4.1：buildSessionTree 抽到 lib/sessionTree.js + node:test 单测 + mermaid/ascii 树形可视化）",
   "private": true,
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
+    "test": "node --test 'tests/**/*.test.js'",
     "doctor": "node index.js doctor",
     "probe": "node index.js probe",
     "state": "node index.js state",
@@ -46,7 +47,7 @@
     "dom-dump": "node index.js dom-dump",
     "xhr-log": "node index.js xhr-log"
   },
-  "engines": { "node": ">=16.0.0" },
+  "engines": { "node": ">=18.0.0" },
   "jsEyes": { "minParentVersion": "2.6.1" },
   "dependencies": {
     "@js-eyes/config": "^2.0.0",

@@ -1,7 +1,7 @@
 ---
 name: js-deepseek-ops-skill
 description: DeepSeek Chat 全量自动化 skill：READ + INTERACTIVE + DESTRUCTIVE 三档；登录态 / 历史会话 / 单会话历史 / chat 页深度只读 + 创建/重命名/置顶 / 反馈 / 上传 / 分享 / 账号设置 / DOM 模式发/编辑/重生消息（绕开 PoW）。所有 destructive 调用强制写 audit.jsonl，irreversible 调用前自动 backup。**v0.3.3 起不再暴露删除会话工具**（不可逆且无可靠补偿，请走官方 UI）。
-version: 0.4.0
+version: 0.4.1
 metadata:
   openclaw:
     emoji: "\U0001F9E0"
@@ -148,6 +148,10 @@ node index.js get-session-tree <sid>                   # 完整 SessionTree（�
 node index.js list-branch-points <sid>                 # 仅分支点 + children 摘要（轻量）
 node index.js get-branch-path <sid>                    # active path（默认 leaf=current_message_id）
 node index.js get-branch-path <sid> --leaf 33          # 指定 leaf 还原被埋藏分支
+# v0.4.1 树形可视化（仅适用于 get-session-tree / get-branch-path）
+node index.js get-session-tree <sid> --format mermaid  # 输出 mermaid flowchart
+node index.js get-session-tree <sid> --format ascii    # 输出 ascii 缩进树
+node index.js get-session-tree <sid> --format mermaid --out tree.mmd  # 落盘
 node index.js chat-settings-view --scope model
 
 # DESTRUCTIVE（reversible）

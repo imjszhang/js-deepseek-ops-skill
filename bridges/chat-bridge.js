@@ -38,9 +38,10 @@
 
 (function install() {
   'use strict';
-  const VERSION = '0.3.14';
+  const VERSION = '0.3.15';
 
   // @@include ./common.js
+  // @@include ../lib/sessionTree.js
 
   const DEFAULT_CONTENT_MAX_LEN = 60000;
 
@@ -297,147 +298,17 @@
   //
   // 三个对外方法 getSessionTree / listBranchPoints / getBranchPath 都是 buildSessionTree
   // 的 view —— 后两者基于全树派生轻量结果。
+  //
+  // v0.4.1 起：buildSessionTree + _emptyTreeStats 的实现已抽到 lib/sessionTree.js，
+  // 通过顶部 `// @@include ../lib/sessionTree.js` 文本嵌入到本 IIFE scope。
+  // 调用处需把 IIFE scope 内的 normalizer 作为 deps 显式传入（依赖注入）。
 
-  function _emptyTreeStats() {
-    return {
-      totalMessages: 0, branchPointCount: 0, leafCount: 0, maxDepth: 0,
-      activePathLength: 0, inactiveMessageCount: 0,
-      orphanIds: [], warnings: [],
-    };
-  }
+  // 注：_emptyTreeStats / buildSessionTree 由 lib/sessionTree.js 通过文件顶部的
+  // `// @@include ../lib/sessionTree.js` 文本嵌入到本 IIFE scope。
+  // 调用时把 IIFE scope 内的 normalizer 作为 deps 显式传入：
+  //   buildSessionTree(session, messages, opts, { normalizeChatMessage, normalizeChatSessionItem, clampLimit })
 
-  /**
-   * buildSessionTree(rawSession, rawMessages, options) -> SessionTree
-   *
-   * 不变量：
-   *   - rootMessageIds[].every(id => nodes[id].parentId === null)
-   *   - branchPointIds[].every(id => nodes[id].childrenIds.length >= 2)
-   *   - 反向一致：父的 childrenIds 包含每个 child；每个 child 的 parentId 等于父
-   *   - activePathIds[0] === root（若 currentMessageId 在树中）
-   *   - siblingIndex < siblingCount，且同 parent 下 children 的 siblingIndex 互不相同
-   */
-  function buildSessionTree(rawSession, rawMessages, options) {
-    options = options || {};
-    const contentMaxLen = clampLimit(options.contentMaxLen, DEFAULT_CONTENT_MAX_LEN, 200000);
-    const session = normalizeChatSessionItem(rawSession) || null;
-    const list = Array.isArray(rawMessages) ? rawMessages : [];
-    const stats = _emptyTreeStats();
-
-    const nodes = Object.create(null);
-    for (const m of list) {
-      const norm = normalizeChatMessage(m, { contentMaxLen });
-      if (!norm || typeof norm.messageId !== 'number') continue;
-      // 树扩展字段先占位，二遍填值
-      norm.childrenIds = [];
-      norm.depth = 0;
-      norm.siblingIndex = 0;
-      norm.siblingCount = 1;
-      norm.isOnActivePath = false;
-      norm.isBranchPoint = false;
-      norm.isLeaf = true;
-      nodes[String(norm.messageId)] = norm;
-    }
-
-    // 二遍：建反向索引（按 inserted_at 升序，缺失时退化为 messageId 升序）
-    const rootIds = [];
-    const orphanIds = [];
-    for (const key in nodes) {
-      const n = nodes[key];
-      if (n.parentId == null) {
-        rootIds.push(n.messageId);
-        continue;
-      }
-      const parent = nodes[String(n.parentId)];
-      if (!parent) {
-        orphanIds.push(n.messageId);
-        continue;
-      }
-      parent.childrenIds.push(n.messageId);
-    }
-
-    function _sortChildren(ids) {
-      ids.sort((a, b) => {
-        const na = nodes[String(a)];
-        const nb = nodes[String(b)];
-        const ta = na && na.insertedAt ? Date.parse(na.insertedAt) || 0 : 0;
-        const tb = nb && nb.insertedAt ? Date.parse(nb.insertedAt) || 0 : 0;
-        if (ta !== tb) return ta - tb;
-        return a - b;
-      });
-    }
-    _sortChildren(rootIds);
-    for (const key in nodes) _sortChildren(nodes[key].childrenIds);
-
-    // 三遍：BFS 计算 depth / siblingIndex / siblingCount / isLeaf / isBranchPoint
-    const branchPointIds = [];
-    let leafCount = 0;
-    let maxDepth = 0;
-    const queue = rootIds.map((id) => ({ id, depth: 0, parentChildren: rootIds }));
-    while (queue.length) {
-      const cur = queue.shift();
-      const n = nodes[String(cur.id)];
-      if (!n) continue;
-      n.depth = cur.depth;
-      const sibs = cur.parentChildren;
-      n.siblingCount = sibs.length;
-      n.siblingIndex = sibs.indexOf(cur.id);
-      n.isLeaf = n.childrenIds.length === 0;
-      n.isBranchPoint = n.childrenIds.length >= 2;
-      if (n.isBranchPoint) branchPointIds.push(n.messageId);
-      if (n.isLeaf) leafCount += 1;
-      if (cur.depth > maxDepth) maxDepth = cur.depth;
-      for (const cid of n.childrenIds) {
-        queue.push({ id: cid, depth: cur.depth + 1, parentChildren: n.childrenIds });
-      }
-    }
-    branchPointIds.sort((a, b) => a - b);
-
-    // active path：从 currentMessageId 沿 parentId 回溯
-    const currentMessageId = session && typeof session.currentMessageId === 'number'
-      ? session.currentMessageId
-      : null;
-    const activePathIds = [];
-    const warnings = [];
-    if (currentMessageId == null) {
-      warnings.push('current_message_id_missing');
-    } else if (!nodes[String(currentMessageId)]) {
-      warnings.push('current_message_not_in_tree');
-    } else {
-      let cur = currentMessageId;
-      const seen = Object.create(null);
-      while (cur != null && nodes[String(cur)] && !seen[String(cur)]) {
-        seen[String(cur)] = true;
-        activePathIds.unshift(cur);
-        const p = nodes[String(cur)].parentId;
-        cur = (p == null) ? null : p;
-      }
-    }
-    for (const id of activePathIds) {
-      const n = nodes[String(id)];
-      if (n) n.isOnActivePath = true;
-    }
-
-    // stats
-    stats.totalMessages = Object.keys(nodes).length;
-    stats.branchPointCount = branchPointIds.length;
-    stats.leafCount = leafCount;
-    stats.maxDepth = stats.totalMessages > 0 ? maxDepth + 1 : 0;
-    stats.activePathLength = activePathIds.length;
-    stats.inactiveMessageCount = stats.totalMessages - activePathIds.length;
-    stats.orphanIds = orphanIds.sort((a, b) => a - b);
-    stats.warnings = warnings;
-    if (rootIds.length > 1) stats.warnings.push('multi_root');
-
-    return {
-      session: session || { id: null },
-      rootMessageIds: rootIds,
-      currentMessageId,
-      activePathIds,
-      branchPointIds,
-      nodes,
-      stats,
-    };
-  }
+  const __TREE_DEPS = { normalizeChatMessage, normalizeChatSessionItem, clampLimit };
 
   async function getSessionTree(args) {
     args = args || {};
@@ -447,7 +318,7 @@
     if (!u.ok) return mapHistoryError(resp, u, sid);
     const biz = u.biz || {};
     const contentMaxLen = clampLimit(args.contentMaxLen, DEFAULT_CONTENT_MAX_LEN, 200000);
-    const tree = buildSessionTree(biz.chat_session, biz.chat_messages, { contentMaxLen });
+    const tree = buildSessionTree(biz.chat_session, biz.chat_messages, { contentMaxLen }, __TREE_DEPS);
 
     // limit：仅在节点数超限时按 messageId 倒序保留最新
     const limit = clampLimit(args.limit, 0, 5000);
@@ -482,7 +353,7 @@
     const { resp, unwrapped: u } = await fetchHistoryMessagesRaw(sid);
     if (!u.ok) return mapHistoryError(resp, u, sid);
     const biz = u.biz || {};
-    const tree = buildSessionTree(biz.chat_session, biz.chat_messages, { contentMaxLen: 1 });
+    const tree = buildSessionTree(biz.chat_session, biz.chat_messages, { contentMaxLen: 1 }, __TREE_DEPS);
     const branchPoints = tree.branchPointIds.map((id) => {
       const n = tree.nodes[String(id)];
       const children = (n.childrenIds || []).map((cid) => {
@@ -530,7 +401,7 @@
     if (!u.ok) return mapHistoryError(resp, u, sid);
     const biz = u.biz || {};
     const contentMaxLen = clampLimit(args.contentMaxLen, DEFAULT_CONTENT_MAX_LEN, 200000);
-    const tree = buildSessionTree(biz.chat_session, biz.chat_messages, { contentMaxLen });
+    const tree = buildSessionTree(biz.chat_session, biz.chat_messages, { contentMaxLen }, __TREE_DEPS);
 
     const requested = (args.leafMessageId == null) ? null : Number(args.leafMessageId);
     let leafResolved;

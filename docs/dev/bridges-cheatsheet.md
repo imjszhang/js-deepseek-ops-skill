@@ -62,9 +62,24 @@ window.__jse_deepseek_<name>__ = {
 | `lib/runTool.js::runTool` | READ 工具公共流（history + debug，**不走 cache**），支持 `transformResult` hook |
 | `lib/redact.js::buildGetSessionTransform` | 给 `deepseek_get_session` 用的 redact transform，会装进 `runTool` 的 `options.transformResult` |
 | `lib/redact.js::buildGetSessionTreeTransform` / `buildGetBranchPathTransform` / `buildListBranchPointsTransform` | v0.4.0 全分支树工具的 redact transforms |
-| `bridges/chat-bridge.js::buildSessionTree(rawSession, rawMessages, options)` | v0.4.0 纯函数：从 `/api/v0/chat/history_messages` 响应直接构建 SessionTree（含 `nodes` map + `activePathIds` + `branchPointIds` + `stats`），是 `getSessionTree` / `listBranchPoints` / `getBranchPath` 三个方法的共享内核。详见 [`session-tree-schema.md`](./session-tree-schema.md) |
+| `lib/sessionTree.js::buildSessionTree(rawSession, rawMessages, options, deps)` | **v0.4.1 起**单一来源（v0.4.0 之前内联在 chat-bridge.js）。dual-mode：Node 端 `require` 直用，Browser 端通过 `// @@include ../lib/sessionTree.js` 嵌入 IIFE。是 `getSessionTree` / `listBranchPoints` / `getBranchPath` 的共享内核。`deps` 必须包含 `{ normalizeChatMessage, normalizeChatSessionItem, clampLimit }`（依赖注入）。详见 [`session-tree-schema.md`](./session-tree-schema.md) |
+| `lib/treeFormat.js::formatAsMermaid` / `formatAsAscii` | **v0.4.1**：SessionTree 可视化纯函数，输出 mermaid flowchart / ascii 缩进树。CLI `--format mermaid\|ascii` 走它 |
 | `lib/runCliToFile.js::runCliToFile` | 跑 `node index.js <args>` 把 stdout 直写到文件（绕开 Node `>64KB` `child.stdout.pipe()` 截断坑） |
 | `lib/toolTargets.js::homeUrl/chatSessionUrl` | 拼 navigate 目标 URL，避免硬编码 origin |
+
+## `@@include` 文本预处理（v0.4.1 起）
+
+`lib/session.js::expandBridgeSource` 在注入 bridge 前做一次性文本展开：
+
+- `// @@include ./common.js`：嵌入 [`bridges/common.js`](../../bridges/common.js)（向后兼容）
+- `// @@include ../lib/sessionTree.js`：v0.4.1 新增，把纯逻辑模块嵌入到 IIFE scope
+
+支持任意相对路径，`baseDir` 默认 = `bridges/`。**不递归**：被嵌入文件中的 `@@include`
+不再展开（避免环依赖，目前只需要一层）。读不到文件时抛带 `baseDir + relPath` 的清晰错误。
+
+被嵌入的模块文件必须在末尾用 `if (typeof module !== 'undefined' && module.exports)`
+守卫：Node 端走 export 路径；Browser 端 `module` 未定义、跳过 export，函数声明已在
+IIFE scope 可见。
 
 ## 改 bridge 的 checklist
 

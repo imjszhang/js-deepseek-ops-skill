@@ -2,6 +2,46 @@
 
 本仓库的版本历史与根因索引。SKILL.md 只保留前向规划，所有"已发生"的变更与事故复盘都迁到这里。
 
+## v0.4.1 — 测试基础设施 + 树形可视化（2026-05-07）
+
+v0.4.0 的内部巩固版本：把 `buildSessionTree` 抽到独立的 `lib/sessionTree.js`，引入
+`node:test` 单测基础设施，并新增 mermaid / ascii 树形输出。零新依赖、零 destructive、
+零回归。
+
+### 新增
+
+- [`lib/sessionTree.js`](lib/sessionTree.js)：`buildSessionTree` + `_emptyTreeStats`
+  的**唯一**定义；改为「依赖注入式」纯函数（`deps = { normalizeChatMessage,
+  normalizeChatSessionItem, clampLimit }`）。dual-mode：Node 端 `require` 直用，
+  Browser 端通过 `// @@include ../lib/sessionTree.js` 文本嵌入到 IIFE scope。
+- [`lib/treeFormat.js`](lib/treeFormat.js)：`formatAsMermaid` / `formatAsAscii`
+  纯函数；active path 用粗边 / `*` 前缀标记；`maxNodes` 截断（默认 200）。
+- [`tests/`](tests/) 目录 + `npm test`（基于 Node 内置 `node:test`，无新依赖）：
+  - `tests/buildSessionTree.test.js`：手写小树 + 异常 fixture（multi-root / 孤儿 /
+    currentMessageId 不在树 / 空树 / deps 缺失）+ 真实 session-292 fixture（存在时跑）
+  - `tests/loaderExpand.test.js`：验证 `@@include` 扩展行为
+  - `tests/helpers/loadBridgeNormalizers.js`：vm sandbox 加载 `bridges/common.js`
+    提取真实 normalizer，单一来源零副本
+- CLI：`get-session-tree` / `get-branch-path` 新增 `--format mermaid|ascii`
+  和 `--out <path>`；JSON 仍是默认。
+
+### 修改
+
+- [`lib/session.js::expandBridgeSource`](lib/session.js)：`@@include` 现支持任意
+  相对路径（向后兼容 `@@include ./common.js`）；新增 `opts.baseDir`；不递归。
+- [`bridges/chat-bridge.js`](bridges/chat-bridge.js)：删 130 行内联
+  `buildSessionTree`，改为 `@@include ../lib/sessionTree.js`；调用处显式传 deps。
+  VERSION `0.3.14` → `0.3.15`。
+- [`package.json`](package.json)：`engines.node` `>=16.0.0` → `>=18.0.0`（`node:test`
+  内置稳定）；新增 `scripts.test`；version `0.4.0` → `0.4.1`。
+
+### 不做的事
+
+- 不做增量同步（`cache_version` / `cache_reset_at`）
+- 不做本地树缓存
+- 不做 home-bridge 镜像（推迟 v0.4.2）
+- 不做 diff-branches（推迟 v0.4.2）
+
 ## v0.4.0 — 全分支树读取（2026-05-07）
 
 DeepSeek 单会话内"上一个分支 / 下一个分支"切换器背后的完整消息树首次对外暴露。

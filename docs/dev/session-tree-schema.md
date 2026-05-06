@@ -194,3 +194,26 @@ flowchart TD
 
 - 现有 `deepseek_get_session.messages[]` 字段与 `MessageNode` 的"服务端字段"区段保持完全一致 —— 二期 `get_branch_path` 工具直接复用 `messages[]` schema，不引入新形态
 - `MessageNode` 在 `messages[]` 字段基础上 additive 加了树重建字段；上层不消费这些字段时与旧 messages[] 兼容（superset）
+
+## Node 端调用方式（v0.4.1 起）
+
+`buildSessionTree` 已抽到 [`lib/sessionTree.js`](../../lib/sessionTree.js)，是个
+依赖注入式纯函数，可以在 Node 端直接 `require` 使用（测试、离线分析、未来的
+home-bridge 镜像均走这条路径）：
+
+```js
+const { buildSessionTree } = require('./lib/sessionTree');
+const { loadBridgeNormalizers } = require('./tests/helpers/loadBridgeNormalizers');
+const { normalizeChatMessage, normalizeChatSessionItem, clampLimit } = loadBridgeNormalizers();
+
+const tree = buildSessionTree(rawSession, rawMessages,
+  { contentMaxLen: 60000 },
+  { normalizeChatMessage, normalizeChatSessionItem, clampLimit });
+```
+
+Browser 端（chat-bridge.js IIFE 内）则通过文件顶部的
+`// @@include ../lib/sessionTree.js` 文本嵌入；`deps` 直接传 IIFE scope 内已有的
+normalizer 即可（见 `bridges/chat-bridge.js` 中的 `__TREE_DEPS`）。
+
+可视化输出走 [`lib/treeFormat.js`](../../lib/treeFormat.js) 的 `formatAsMermaid` /
+`formatAsAscii`，CLI 通过 `--format mermaid|ascii` 触发。
