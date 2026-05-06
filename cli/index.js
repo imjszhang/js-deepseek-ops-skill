@@ -187,21 +187,21 @@ async function runToolCommand(commandName, def, opts, positional) {
   // 含正文的工具走 redact transform；list-messages 走防漏断言 transform
   let transformResult = undefined;
   if (commandName === 'get-session') {
-    const mode = opts.redact || 'off';
+    const mode = opts.redact || 'full';
     const truncLen = opts.truncLen ? Number(opts.truncLen) : undefined;
     transformResult = buildGetSessionTransform({ mode, truncLen });
   } else if (commandName === 'get-message') {
-    const mode = opts.redact || 'off';
+    const mode = opts.redact || 'full';
     const truncLen = opts.truncLen ? Number(opts.truncLen) : undefined;
     transformResult = buildGetMessageTransform({ mode, truncLen });
   } else if (commandName === 'list-messages') {
     transformResult = buildListMessagesTransform();
   } else if (commandName === 'get-session-tree') {
-    const mode = opts.redact || 'off';
+    const mode = opts.redact || 'full';
     const truncLen = opts.truncLen ? Number(opts.truncLen) : undefined;
     transformResult = buildGetSessionTreeTransform({ mode, truncLen });
   } else if (commandName === 'get-branch-path') {
-    const mode = opts.redact || 'off';
+    const mode = opts.redact || 'full';
     const truncLen = opts.truncLen ? Number(opts.truncLen) : undefined;
     transformResult = buildGetBranchPathTransform({ mode, truncLen });
   } else if (commandName === 'list-branch-points') {

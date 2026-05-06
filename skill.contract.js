@@ -226,7 +226,7 @@ const TOOL_DEFINITIONS = [
     pageKey: 'chat', method: 'getSession',
     execute(runtime, params, context = {}) {
       const p = params || {};
-      const transform = buildGetSessionTransform({ mode: p.redact || 'off', truncLen: p.truncLen });
+      const transform = buildGetSessionTransform({ mode: p.redact || 'full', truncLen: p.truncLen });
       const targetUrl = p.sessionId ? targets.chatSessionUrl({ sessionId: p.sessionId }) : null;
       return runTool(runtime.ensureBot(), {
         toolName: 'deepseek_get_session', pageKey: 'chat', method: 'getSession',
@@ -293,7 +293,7 @@ const TOOL_DEFINITIONS = [
     pageKey: 'chat', method: 'getMessage',
     execute(runtime, params, context = {}) {
       const p = params || {};
-      const transform = buildGetMessageTransform({ mode: p.redact || 'off', truncLen: p.truncLen });
+      const transform = buildGetMessageTransform({ mode: p.redact || 'full', truncLen: p.truncLen });
       const targetUrl = p.sessionId ? targets.chatSessionUrl({ sessionId: p.sessionId }) : null;
       return runTool(runtime.ensureBot(), {
         toolName: 'deepseek_get_message', pageKey: 'chat', method: 'getMessage',
@@ -326,7 +326,7 @@ const TOOL_DEFINITIONS = [
     pageKey: 'chat', method: 'getSessionTree',
     execute(runtime, params, context = {}) {
       const p = params || {};
-      const transform = buildGetSessionTreeTransform({ mode: p.redact || 'off', truncLen: p.truncLen });
+      const transform = buildGetSessionTreeTransform({ mode: p.redact || 'full', truncLen: p.truncLen });
       const targetUrl = p.sessionId ? targets.chatSessionUrl({ sessionId: p.sessionId }) : null;
       return runTool(runtime.ensureBot(), {
         toolName: 'deepseek_get_session_tree', pageKey: 'chat', method: 'getSessionTree',
@@ -387,7 +387,7 @@ const TOOL_DEFINITIONS = [
     pageKey: 'chat', method: 'getBranchPath',
     execute(runtime, params, context = {}) {
       const p = params || {};
-      const transform = buildGetBranchPathTransform({ mode: p.redact || 'off', truncLen: p.truncLen });
+      const transform = buildGetBranchPathTransform({ mode: p.redact || 'full', truncLen: p.truncLen });
       const targetUrl = p.sessionId ? targets.chatSessionUrl({ sessionId: p.sessionId }) : null;
       return runTool(runtime.ensureBot(), {
         toolName: 'deepseek_get_branch_path', pageKey: 'chat', method: 'getBranchPath',
