@@ -6,7 +6,11 @@ const { PAGE_PROFILES, DEFAULT_PAGE } = require('../lib/config');
 const { resolveRuntimeConfig } = require('../lib/runtimeConfig');
 const { BrowserAutomation } = require('../lib/js-eyes-client');
 const { runTool } = require('../lib/runTool');
-const { buildGetSessionTransform } = require('../lib/redact');
+const {
+  buildGetSessionTransform,
+  buildGetMessageTransform,
+  buildListMessagesTransform,
+} = require('../lib/redact');
 const { ensureSkillRecordsReadme } = require('../lib/skillRecordsReadme');
 
 function pickPage(commandName, opts) {
@@ -73,12 +77,18 @@ async function runToolCommand(commandName, def, opts, positional) {
   const browser = new BrowserAutomation(runtimeConfig.serverUrl, opts.verbose ? {} : {
     logger: { info: () => {}, warn: (...a) => console.error(...a), error: (...a) => console.error(...a) },
   });
-  // get-session 走 redact transform
+  // 含正文的工具走 redact transform；list-messages 走防漏断言 transform
   let transformResult = undefined;
   if (commandName === 'get-session') {
     const mode = opts.redact || 'off';
     const truncLen = opts.truncLen ? Number(opts.truncLen) : undefined;
     transformResult = buildGetSessionTransform({ mode, truncLen });
+  } else if (commandName === 'get-message') {
+    const mode = opts.redact || 'off';
+    const truncLen = opts.truncLen ? Number(opts.truncLen) : undefined;
+    transformResult = buildGetMessageTransform({ mode, truncLen });
+  } else if (commandName === 'list-messages') {
+    transformResult = buildListMessagesTransform();
   }
   try {
     const response = await runTool(browser, {

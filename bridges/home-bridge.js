@@ -19,7 +19,7 @@
 
 (function install() {
   'use strict';
-  const VERSION = '0.1.0';
+  const VERSION = '0.2.0';
 
   // @@include ./common.js
 
@@ -95,6 +95,14 @@
     return navigateLocation(buildDeepseekUrl('/'));
   }
 
+  /**
+   * navigateNewChat - INTERACTIVE 别名：与 navigateHome 同 URL，仅语义不同。
+   * 不调用 chat_session/create；DeepSeek 是首次发消息才落 sessionId，无副作用。
+   */
+  function navigateNewChat() {
+    return navigateLocation(buildDeepseekUrl('/'));
+  }
+
   function navigateSession(args) {
     args = args || {};
     if (args.url) return navigateLocation(String(args.url));
@@ -110,6 +118,7 @@
     sessionState,
     listSessions,
     navigateHome,
+    navigateNewChat,
     navigateSession,
   };
 

@@ -47,6 +47,20 @@ function readUserToken() {
   } catch (_) { return null; }
 }
 
+/**
+ * readDeviceId - 从 localStorage 读 DeepSeek 设备 id，给 /api/v0/client/settings 用。
+ * 实测 key 是 `__ds_remote_feature_did`（uuid 形式）。读不到回 null，
+ * 调用方通常应判 null 后回 missing_device_id。
+ *
+ * @returns {string|null}
+ */
+function readDeviceId() {
+  try {
+    const v = localStorage.getItem('__ds_remote_feature_did');
+    return v && typeof v === 'string' ? v : null;
+  } catch (_) { return null; }
+}
+
 function buildDeepseekUrl(path) {
   // 强制使用绝对 URL：扩展隔离上下文里相对 URL 会抛 "... is not a valid URL"。
   let origin = 'https://chat.deepseek.com';
@@ -257,6 +271,170 @@ function parseChatSessionId(url) {
     const m = /^\/a\/chat\/s\/([\w-]+)/i.exec(u.pathname);
     return m ? m[1] : null;
   } catch (_) { return null; }
+}
+
+/**
+ * parseChatSessionIdStrict - 严格匹配 /a/chat/s/<uuid>，不允许任何后缀路径段。
+ * INTERACTIVE 校验 / sessionId 与 URL 一致性校验用，避免被 /a/chat/s/<id>/foo 这种
+ * 形态误判为同一会话。
+ *
+ * @param {string} url
+ * @returns {string|null}
+ */
+function parseChatSessionIdStrict(url) {
+  try {
+    const u = new URL(url || location.href);
+    const m = /^\/a\/chat\/s\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i.exec(u.pathname);
+    return m ? m[1] : null;
+  } catch (_) { return null; }
+}
+
+/**
+ * digestText - 对 composer 草稿等敏感文本做 SHA-256 摘要，永不出原文。
+ * 异步包装 crypto.subtle；不可用时 fallback 到 length-only。
+ *
+ * @param {string} text
+ * @returns {Promise<{length:number, sha256:string|null}>}
+ */
+async function digestText(text) {
+  const s = String(text == null ? '' : text);
+  const length = s.length;
+  try {
+    if (typeof crypto !== 'undefined' && crypto.subtle && typeof TextEncoder !== 'undefined') {
+      const buf = new TextEncoder().encode(s);
+      const hash = await crypto.subtle.digest('SHA-256', buf);
+      const bytes = new Uint8Array(hash);
+      let hex = '';
+      for (let i = 0; i < bytes.length; i++) {
+        const h = bytes[i].toString(16);
+        hex += h.length === 1 ? '0' + h : h;
+      }
+      return { length, sha256: hex };
+    }
+  } catch (_) {}
+  return { length, sha256: null };
+}
+
+/**
+ * pickLatestStreamingMessage - 从 chat_messages[] 找 status='STREAMING' 的最近一条。
+ * 注意：传入的是已 normalize 过的列表（字段是 status / messageId / role / insertedAt）。
+ *
+ * @param {Array} messages
+ * @returns {{messageId:number|null, role:string, insertedAt:string}|null}
+ */
+function pickLatestStreamingMessage(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) return null;
+  let chosen = null;
+  for (const m of messages) {
+    if (!m || m.status !== 'STREAMING') continue;
+    if (!chosen) { chosen = m; continue; }
+    const a = chosen.messageId == null ? -1 : chosen.messageId;
+    const b = m.messageId == null ? -1 : m.messageId;
+    if (b > a) chosen = m;
+  }
+  if (!chosen) return null;
+  return {
+    messageId: chosen.messageId,
+    role: chosen.role,
+    insertedAt: chosen.insertedAt,
+  };
+}
+
+/**
+ * summarizeMessageMeta - 把 normalizeChatMessage 的输出剥掉 content / thinkingContent
+ * 两个字段，list_messages 专用，避免任何正文跨进程传递。
+ *
+ * @param {object} m  normalizeChatMessage(...) 的返回
+ * @returns {object|null}
+ */
+function summarizeMessageMeta(m) {
+  if (!m || typeof m !== 'object') return null;
+  return {
+    messageId: m.messageId,
+    parentId: m.parentId,
+    model: m.model,
+    role: m.role,
+    status: m.status,
+    thinkingEnabled: m.thinkingEnabled,
+    searchEnabled: m.searchEnabled,
+    banEdit: m.banEdit,
+    banRegenerate: m.banRegenerate,
+    accumulatedTokenUsage: m.accumulatedTokenUsage,
+    files: m.files,
+    feedback: m.feedback,
+    insertedAt: m.insertedAt,
+    contentLength: m.contentLength,
+    contentTruncated: m.contentTruncated,
+    hasThinking: !!(m.thinkingContent || m.thinkingContentLength > 0),
+    thinkingContentLength: m.thinkingContentLength,
+    thinkingContentTruncated: m.thinkingContentTruncated,
+    thinkingElapsedSecs: m.thinkingElapsedSecs,
+    searchStatus: m.searchStatus,
+    searchResultsCount: m.searchResultsCount,
+  };
+}
+
+/**
+ * readChatPageDom - 一次性 querySelector，读 chat 页 UI 状态。
+ * 永不回 composer 原文：textarea 的 value 仅取 length + sha256。
+ *
+ * 注意：实际 selector 可能随 DeepSeek 改版漂移，所有 selector 都是宽容失败的，
+ * 找不到时对应字段回 null / 0 / false。
+ *
+ * @returns {Promise<{
+ *   composer:{length:number, sha256:string|null, present:boolean},
+ *   streamingDom:boolean,
+ *   scrollAtBottom:boolean,
+ *   titleText:string|null,
+ *   visibleMessageCount:number
+ * }>}
+ */
+async function readChatPageDom() {
+  let composerLen = 0;
+  let composerSha = null;
+  let composerPresent = false;
+  try {
+    const ta = document.querySelector('textarea');
+    if (ta) {
+      composerPresent = true;
+      const d = await digestText(ta.value || '');
+      composerLen = d.length;
+      composerSha = d.sha256;
+    }
+  } catch (_) {}
+
+  let streamingDom = false;
+  try {
+    if (document.querySelector('[data-status="STREAMING"], [data-message-status="STREAMING"], .ds-streaming, .is-streaming')) {
+      streamingDom = true;
+    }
+  } catch (_) {}
+
+  let scrollAtBottom = false;
+  try {
+    const scroller = document.querySelector('[class*="scroll"], main, [role="main"]');
+    if (scroller) {
+      const slack = 8;
+      scrollAtBottom = (scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight) <= slack;
+    }
+  } catch (_) {}
+
+  let titleText = null;
+  try { titleText = (document.title || '').trim() || null; } catch (_) {}
+
+  let visibleMessageCount = 0;
+  try {
+    const nodes = document.querySelectorAll('[data-message-id], [data-msg-id], [class*="message-item"]');
+    visibleMessageCount = nodes ? nodes.length : 0;
+  } catch (_) {}
+
+  return {
+    composer: { length: composerLen, sha256: composerSha, present: composerPresent },
+    streamingDom,
+    scrollAtBottom,
+    titleText,
+    visibleMessageCount,
+  };
 }
 
 function normalizeChatSessionItem(s) {

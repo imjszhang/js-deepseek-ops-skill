@@ -1,6 +1,6 @@
 {
   "name": "js-deepseek-ops-skill",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "DeepSeek Chat 内容只读 + 浏览器导航技能：PAGE_PROFILES + Bridges + Session 架构，READ + INTERACTIVE 两档（不做 DESTRUCTIVE，不发消息 / 不切模型 / 不删会话）",
   "private": true,
   "main": "index.js",
@@ -12,8 +12,14 @@
     "session-state": "node index.js session-state",
     "list-sessions": "node index.js list-sessions",
     "get-session": "node index.js get-session",
+    "chat-page-state": "node index.js chat-page-state",
+    "list-messages": "node index.js list-messages",
+    "get-message": "node index.js get-message",
+    "streaming-status": "node index.js streaming-status",
+    "chat-settings-view": "node index.js chat-settings-view",
     "navigate-home": "node index.js navigate-home",
     "navigate-session": "node index.js navigate-session",
+    "navigate-new-chat": "node index.js navigate-new-chat",
     "dom-dump": "node index.js dom-dump",
     "xhr-log": "node index.js xhr-log"
   },

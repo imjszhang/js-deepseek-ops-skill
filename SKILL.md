@@ -1,7 +1,7 @@
 ---
 name: js-deepseek-ops-skill
-description: DeepSeek Chat 内容只读 + 浏览器导航 skill：登录态 / 历史会话列表 / 单会话历史，全部走 chat.deepseek.com 内部 JSON 端点，浏览器侧仅 location.assign 改 URL；私聊正文默认 redact=off（仅出 sha256 摘要）。
-version: 0.1.0
+description: DeepSeek Chat 内容只读 + 浏览器导航 skill：登录态 / 历史会话列表 / 单会话历史 / chat 页深度只读（消息元数据 / 单条消息 / 流式状态 / 设置快照），全部走 chat.deepseek.com 内部 JSON 端点，浏览器侧仅 location.assign 改 URL；私聊正文默认 redact=off（仅出 sha256 摘要），composer 草稿原文绝不返回。
+version: 0.2.0
 metadata:
   openclaw:
     emoji: "\U0001F9E0"
@@ -68,6 +68,8 @@ metadata:
 - **附件 / API key**：不上传文件 / 不创建 / 撤销 API key / 不改账户设置（昵称、密码、订阅、绑定）
 - **登录自动化**：不实现登录自动化 / 不注入 cookie / 不伪造 token
 - **数据导出**：不主动批量拉所有会话正文落盘（业务脚本 `dump-session.js` 只在 v0.3 路线图，且要显式 `--allow-raw-output`）
+- **composer 草稿原文**：v0.2 起 `chat_page_state` 只回 composer 的 `{length, sha256, present}`，**永不**返回原文（草稿可能含密码 / 邮箱 / 未发布 prompt）
+- **跨会话 messageId 引用**：`get_message` 强校验 `sessionId` 与当前 URL 一致，避免借 chat 页拉别的会话的消息
 
 如果未来真的要做某个 DESTRUCTIVE，将在 `skill.contract.js` 里把该工具标记 `destructive: true`，并要求调用方显式 `--confirm` 走 Safe Default Mode consent 流程。
 
@@ -78,8 +80,14 @@ metadata:
 | READ | `deepseek_session_state` | 任意 deepseek tab | 登录态：`/api/v0/users/current` 优先 + DOM 兜底，回 `{loggedIn, name, userId, mobile?, email?, picture, ...}` |
 | READ | `deepseek_list_sessions` | `/` | 列出历史会话；`limit` 默认 25 / 上限 100，`beforeSeqId` 游标分页；返回 `{ items[]:{id,title,modelType,updatedAt,createdAt,...}, hasMore, cursor }` |
 | READ | `deepseek_get_session` | `/a/chat/s/<id>` | 单会话历史消息；`sessionId` 必填，`limit` 保留最近 N 条，`redact` ∈ `off`/`trunc`/`full`（默认 off）；返回 `{ session, messages[]:{messageId,role,content,contentHash,contentLength,thinkingContent,...}, redact:{mode,...} }` |
+| READ | `deepseek_chat_page_state` | `/a/chat/s/<id>` | chat 页 UI 状态快照：`{onChatPage, sessionId, title, composer:{length,sha256,present}, streamingDom, scrollAtBottom, visibleMessageCount}`；composer 草稿原文绝不返回 |
+| READ | `deepseek_list_messages` | `/a/chat/s/<id>` | 当前会话消息**元数据**列表；`sessionId` 必填；返回 `{ session, messages[]:{messageId, role, status, contentLength, contentHash, hasThinking, thinkingContentLength, files, ...} }`，**永不出 content / thinkingContent 正文** |
+| READ | `deepseek_get_message` | `/a/chat/s/<id>` | 单条消息详情；`sessionId + messageId` 必填，`redact` 政策与 `get_session` 一致；强校验 `sessionId` 与当前 URL 一致 |
+| READ | `deepseek_streaming_status` | `/a/chat/s/<id>` | 一次性观察 assistant 是否在产出（API status + DOM 双侧确认）；返回 `{streaming, currentMessageId, role, lastUpdatedAt}`；**不订阅 SSE / 无任何 listener / 无内容** |
+| READ | `deepseek_chat_settings_view` | 任意 deepseek tab | 只读 `/api/v0/client/settings?scope=main\|model`，回 model 列表 / feature flags / 默认 toggle 状态；`readOnly: true`，永不写 |
 | INTERACTIVE | `deepseek_navigate_home` | `/` | 仅 `location.assign` 跳到主页 |
 | INTERACTIVE | `deepseek_navigate_session` | `/a/chat/s/<id>` | 仅 `location.assign` 跳到指定会话 |
+| INTERACTIVE | `deepseek_navigate_new_chat` | `/` | 仅 `location.assign` 起新对话；不调用 `chat_session/create`，DeepSeek 是首次发消息才落 sessionId，本调用无副作用 |
 
 全部工具都是 `optional: true`（按需加载），入参详见 `skill.contract.js::TOOL_DEFINITIONS`。
 
@@ -115,9 +123,19 @@ node index.js get-session <sessionId> --limit 20 --pretty
 node index.js get-session <sessionId> --limit 50 --redact trunc --trunc-len 200 --pretty
 node index.js get-session <sessionId> --redact full --debug-recording   # 显式拿原文
 
+# READ：chat 页深度只读（v0.2+）
+node index.js chat-page-state --pretty                                  # composer 仅 sha256
+node index.js list-messages <sessionId> --limit 20 --pretty             # 永不出正文
+node index.js get-message <sessionId> <messageId> --pretty              # 默认 redact=off
+node index.js get-message <sessionId> <messageId> --redact trunc --trunc-len 200
+node index.js streaming-status                                          # 一次性观察，不订阅 SSE
+node index.js chat-settings-view --scope main --pretty                  # 只读 model 列表
+node index.js chat-settings-view --scope model --pretty
+
 # INTERACTIVE：仅 location.assign，不模拟点击
 node index.js navigate-home
 node index.js navigate-session <sessionId>
+node index.js navigate-new-chat                                         # 起新对话（无副作用）
 
 # 内部踩点（仅本仓库开发者用）
 node index.js dom-dump --limit 80
@@ -199,10 +217,13 @@ URL 片段重叠由 `pickTabMatchingFragment` 评分函数解决；每个 profil
 
 ## 路线图
 
-- **v0.1（当前版本）**：MVP——`home` / `chat` 两个 page profile；5 个 AI 工具（`session_state` / `list_sessions` / `get_session` / `navigate_home` / `navigate_session`）；CLI 10 条命令（含 doctor / dom-dump / xhr-log）；`lib/redact.js` 默认 `off`，bridge 端 `contentMaxLen` 硬上限；`docs/dev/api-endpoints.md` 落踩点结果
-- **v0.2（计划）**：加 `current_chat_state` / `list_models` / `quota_state`（仅读，不切）；分页游标补全（before_seq_id 细节、has_more 多场景）；`lib/deepseekUtils.js` cheerio DOM fallback（v0.1 占位空）
-- **v0.3（计划）**：业务脚本 `scripts/aggregate-sessions.js`（导出会话索引 markdown，仅 metadata）/ `scripts/dump-session.js <id>`（单会话导出，**默认 redact**，`--allow-raw-output` 才出原文）
-- **v0.4（计划）**：`scripts/_dev/diff-schema.js` schema 退化检测；`docs/dev/bridges-cheatsheet.md` 完整化
+> 历史版本变更与根因复盘见 [CHANGELOG.md](CHANGELOG.md)。
+
+- **v0.2（当前版本）**：chat 页深度只读 —— 在不新增 page profile、不破任何安全红线的前提下，把 `chat-bridge` 扩成"五件套 + 1 INTERACTIVE 别名"：`chat_page_state` / `list_messages` / `get_message` / `streaming_status` / `chat_settings_view` + `navigate_new_chat`；`lib/redact.js` 加 `buildGetMessageTransform` + `buildListMessagesTransform`（防漏断言）；`bridges/common.js` 加 5 个纯浏览器 helper（含 `digestText` 给 composer 做 sha256 摘要）；composer 草稿原文写进"永不返回"红线
+- **v0.3（计划）**：细粒度提取 —— `extract_citations`（公开 URL，可不 redact）/ `extract_code_blocks`（默认 sha，`--reveal-code` 才出）/ `list_attachments`（永不下载）/ `thinking_meta`；接 `safety:'sensitive-read'` 中间档 hook 进 OpenClaw consent
+- **v0.4（计划）**：DOM/API 双路径裁剪版 —— 仅给 `get_message` / `list_messages` 加 DOM-fallback（API 401/风控时降级），response 加 `usedMethod / fallback / triedMethods`；`scripts/_dev/diff-schema.js` schema 退化检测
+- **v0.5（计划）**：业务脚本 `scripts/aggregate-sessions.js`（仅 metadata）/ `scripts/dump-session.js <id>`（默认 redact，`--allow-raw-output` 才出原文）；`scripts/_templates/`
+- **v0.6（计划）**：visual / 录像（chat 页强制 mask 模式）；`navigate_session_anchor` 加 `awaitBridgeAfterNav` 锚点等待
 - **永不做**：见「明确不做的事」
 
 ## Recording
@@ -231,6 +252,10 @@ URL 片段重叠由 `pickTabMatchingFragment` 评分函数解决；每个 profil
 | `not_logged_in`（list-sessions / get-session） | 未登录或 `userToken` 过期 | 在浏览器里重新登录 deepseek；或先跑 `node index.js session-state` 自检 |
 | `fetch_failed`（httpStatus=401） | Bearer 不带 / 失效 | 浏览器里点一下任意会话触发 token 刷新；如仍失败重新登录 |
 | `session_not_found`（httpStatus=404） | 会话已被删除 / id 拼错 | 用 `list-sessions` 取最新 id 再试 |
+| `message_not_found`（get-message） | messageId 不在该 sessionId 内 | 先跑 `list-messages <sid>` 看真实 messageId 列表 |
+| `session_id_mismatch`（get-message） | 传入 sessionId 与当前 chat 页 URL 不一致 | 要么先 `navigate-session <sid>`，要么省略 sessionId 让 bridge 从 URL 解析 |
+| `missing_device_id`（chat-settings-view） | `localStorage.__ds_remote_feature_did` 未设置 | 在浏览器里完整打开过任一 chat 页即可（DeepSeek 会自动写入） |
+| `chat_settings_view` 永远返回 `biz_error: SETTINGS_NOT_FOUND` | 扩展 isolated world fetch 被 DeepSeek 当 anonymous 处理（同 reddit v3.6.1 cookie partitioning） | 已知限制，本 skill 不为此引入 page-world 注入；浏览器自身访问该接口仍能拿到 11.7KB model 列表，可临时手动看；未来若需要将做 v0.4 DOM-fallback 路径 |
 | `cross_origin_navigation_forbidden` | INTERACTIVE 调用传了非 deepseek.com URL | 这是硬约束（`navigateLocation` 拒绝跨域）；只能传 `*.deepseek.com` |
 | `bridge_not_installed` / `method_not_found` | bridge VERSION 可能未 bump | 改 bridge 后 bump VERSION，CLI 会自动重注；或 `JS_DEEPSEEK_DEBUG=1 node index.js probe -v` 看注入流程 |
 | 正文返回为 null 但 contentHash 有值 | 正常：`redact=off`（默认） | 想看原文显式 `--redact trunc` 或 `--redact full --debug-recording` |

@@ -7,7 +7,11 @@ const { Session } = require('./lib/session');
 const { resolveRuntimeConfig } = require('./lib/runtimeConfig');
 const { PAGE_PROFILES } = require('./lib/config');
 const targets = require('./lib/toolTargets');
-const { buildGetSessionTransform } = require('./lib/redact');
+const {
+  buildGetSessionTransform,
+  buildGetMessageTransform,
+  buildListMessagesTransform,
+} = require('./lib/redact');
 const { ensureSkillRecordsReadme } = require('./lib/skillRecordsReadme');
 
 const CLI_COMMANDS = [
@@ -17,8 +21,14 @@ const CLI_COMMANDS = [
   { name: 'session-state', description: '读取登录态' },
   { name: 'list-sessions', description: '列出历史会话（标题 / 时间 / 模型类型，不含正文）' },
   { name: 'get-session', description: '读取单个会话消息历史（默认 redact=off，正文以 sha256 摘要呈现）' },
+  { name: 'chat-page-state', description: '读取当前 chat 页 UI 状态快照（不含 composer 草稿原文）' },
+  { name: 'list-messages', description: '列出当前会话的消息元数据（永不含正文）' },
+  { name: 'get-message', description: '读取单条消息（默认 redact=off，正文以 sha256 摘要呈现）' },
+  { name: 'streaming-status', description: '一次性观察 assistant 是否在产出（不订阅 SSE）' },
+  { name: 'chat-settings-view', description: '只读拉 /api/v0/client/settings（model 列表 / feature flags）' },
   { name: 'navigate-home', description: '导航到 / （INTERACTIVE）' },
   { name: 'navigate-session', description: '导航到 /a/chat/s/<id> （INTERACTIVE）' },
+  { name: 'navigate-new-chat', description: '导航到 / 起新对话（INTERACTIVE，不创建 sessionId）' },
 ];
 
 function makeLogger(logger) {
@@ -249,6 +259,177 @@ const TOOL_DEFINITIONS = [
     },
   },
 
+  {
+    name: 'deepseek_chat_page_state',
+    label: 'DeepSeek Ops: Chat Page State',
+    description: '读取当前 chat 页的 UI 状态快照（sessionId / title / composer 草稿的 length+sha256 / 是否流式中 / scroll 是否到底）；composer 草稿原文绝不返回',
+    parameters: { type: 'object', properties: {}, required: [] },
+    optional: true,
+    interactive: false,
+    destructive: false,
+    pageKey: 'chat',
+    method: 'chatPageState',
+    execute: makeReadToolExecutor({
+      toolName: 'deepseek_chat_page_state',
+      pageKey: 'chat',
+      method: 'chatPageState',
+      buildTargetUrl: () => null,
+    }),
+  },
+  {
+    name: 'deepseek_list_messages',
+    label: 'DeepSeek Ops: List Messages',
+    description: '列出指定会话的消息元数据（messageId / role / status / contentLength / contentHash / 是否含 thinking / 附件数 / 搜索结果数）。永不返回 content / thinkingContent 正文。',
+    parameters: {
+      type: 'object',
+      properties: {
+        sessionId: { type: 'string', description: '会话 UUID（来自 deepseek_list_sessions 的 items[].id）' },
+        limit: { type: 'number', description: '保留最近 N 条消息（0 或不传 = 不截断）' },
+        contentMaxLen: { type: 'number', description: 'bridge 端正文硬上限（仅影响 contentLength 统计准确度），默认 60000' },
+      },
+      required: ['sessionId'],
+    },
+    optional: true,
+    interactive: false,
+    destructive: false,
+    pageKey: 'chat',
+    method: 'listMessages',
+    execute(runtime, params, context = {}) {
+      const p = params || {};
+      const sessionId = p.sessionId;
+      const transform = buildListMessagesTransform();
+      const targetUrl = sessionId ? targets.chatSessionUrl({ sessionId }) : null;
+      return runTool(runtime.ensureBot(), {
+        toolName: 'deepseek_list_messages',
+        pageKey: 'chat',
+        method: 'listMessages',
+        args: {
+          sessionId,
+          limit: p.limit,
+          contentMaxLen: p.contentMaxLen,
+        },
+        targetUrl,
+        options: {
+          wsEndpoint: runtime.config.serverUrl,
+          recording: runtime.config.recording,
+          runId: context.toolCallId,
+          navigateOnReuse: false,
+          reuseAnyDeepseekTab: true,
+          createUrl: targetUrl || 'https://chat.deepseek.com/',
+          transformResult: transform,
+        },
+      });
+    },
+  },
+  {
+    name: 'deepseek_get_message',
+    label: 'DeepSeek Ops: Get Message',
+    description: '读取指定会话内单条消息。默认 redact="off"：content / thinkingContent 替换为 sha256+length 摘要',
+    parameters: {
+      type: 'object',
+      properties: {
+        sessionId: { type: 'string', description: '会话 UUID' },
+        messageId: { type: 'number', description: '消息 message_id（来自 deepseek_list_messages）' },
+        redact: { type: 'string', enum: ['off', 'trunc', 'full'], default: 'off', description: 'off=隐藏正文(默认), trunc=截短, full=原文(仅 debug 模式)' },
+        truncLen: { type: 'number', description: 'redact=trunc 时单条正文保留长度，默认 200' },
+        contentMaxLen: { type: 'number', description: 'bridge 端正文硬上限；默认 60000' },
+      },
+      required: ['sessionId', 'messageId'],
+    },
+    optional: true,
+    interactive: false,
+    destructive: false,
+    pageKey: 'chat',
+    method: 'getMessage',
+    execute(runtime, params, context = {}) {
+      const p = params || {};
+      const sessionId = p.sessionId;
+      const messageId = p.messageId;
+      const transform = buildGetMessageTransform({ mode: p.redact || 'off', truncLen: p.truncLen });
+      const targetUrl = sessionId ? targets.chatSessionUrl({ sessionId }) : null;
+      return runTool(runtime.ensureBot(), {
+        toolName: 'deepseek_get_message',
+        pageKey: 'chat',
+        method: 'getMessage',
+        args: {
+          sessionId,
+          messageId,
+          contentMaxLen: p.contentMaxLen,
+        },
+        targetUrl,
+        options: {
+          wsEndpoint: runtime.config.serverUrl,
+          recording: runtime.config.recording,
+          runId: context.toolCallId,
+          navigateOnReuse: false,
+          reuseAnyDeepseekTab: true,
+          createUrl: targetUrl || 'https://chat.deepseek.com/',
+          transformResult: transform,
+        },
+      });
+    },
+  },
+  {
+    name: 'deepseek_streaming_status',
+    label: 'DeepSeek Ops: Streaming Status',
+    description: '一次性观察当前 chat 页是否有 assistant 在产出（API status=STREAMING + DOM 双侧确认）。永不订阅 SSE / 不返回任何正文',
+    parameters: {
+      type: 'object',
+      properties: {
+        sessionId: { type: 'string', description: '会话 UUID（不传则从当前 URL 解析）' },
+      },
+      required: [],
+    },
+    optional: true,
+    interactive: false,
+    destructive: false,
+    pageKey: 'chat',
+    method: 'streamingStatus',
+    execute(runtime, params, context = {}) {
+      const p = params || {};
+      const sessionId = p.sessionId;
+      const targetUrl = sessionId ? targets.chatSessionUrl({ sessionId }) : null;
+      return runTool(runtime.ensureBot(), {
+        toolName: 'deepseek_streaming_status',
+        pageKey: 'chat',
+        method: 'streamingStatus',
+        args: { sessionId },
+        targetUrl,
+        options: {
+          wsEndpoint: runtime.config.serverUrl,
+          recording: runtime.config.recording,
+          runId: context.toolCallId,
+          navigateOnReuse: false,
+          reuseAnyDeepseekTab: true,
+          createUrl: targetUrl || 'https://chat.deepseek.com/',
+        },
+      });
+    },
+  },
+  {
+    name: 'deepseek_chat_settings_view',
+    label: 'DeepSeek Ops: Chat Settings View',
+    description: '只读拉 /api/v0/client/settings（model 列表 / feature flags / 当前 chat 默认设置）；本工具永不写任何 toggle',
+    parameters: {
+      type: 'object',
+      properties: {
+        scope: { type: 'string', enum: ['main', 'model'], default: 'main', description: '设置作用域' },
+      },
+      required: [],
+    },
+    optional: true,
+    interactive: false,
+    destructive: false,
+    pageKey: 'chat',
+    method: 'chatSettingsView',
+    execute: makeReadToolExecutor({
+      toolName: 'deepseek_chat_settings_view',
+      pageKey: 'chat',
+      method: 'chatSettingsView',
+      buildTargetUrl: () => null,
+    }),
+  },
+
   // ---- INTERACTIVE 档（仅 location.assign，不模拟点击，不写任何业务数据）----
   {
     name: 'deepseek_navigate_home',
@@ -287,6 +468,22 @@ const TOOL_DEFINITIONS = [
       toolName: 'deepseek_navigate_session',
       pageKey: 'chat',
       method: 'navigateSession',
+    }),
+  },
+  {
+    name: 'deepseek_navigate_new_chat',
+    label: 'DeepSeek Ops: Navigate To New Chat',
+    description: '导航到 chat.deepseek.com/ 起新对话（仅 location.assign）。不调用 chat_session/create；DeepSeek 是首次发消息才落 sessionId，本调用无副作用',
+    parameters: { type: 'object', properties: {}, required: [] },
+    optional: true,
+    interactive: true,
+    destructive: false,
+    pageKey: 'home',
+    method: 'navigateNewChat',
+    execute: makeNavigateToolExecutor({
+      toolName: 'deepseek_navigate_new_chat',
+      pageKey: 'home',
+      method: 'navigateNewChat',
     }),
   },
 ];

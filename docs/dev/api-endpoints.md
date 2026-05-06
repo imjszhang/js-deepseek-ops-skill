@@ -129,11 +129,34 @@ DeepSeek 的所有 `/api/v0/*` 接口返回统一壳子：
 
 bridge 端 `normalizeChatMessage`（见 `bridges/common.js`）只输出业务必要字段；`files` 仅出 `length`，`feedback` 仅出 `boolean`，避免传超大对象。
 
-### `GET /api/v0/client/settings?did=<deviceId>&scope=main|model` —— 客户端配置 / 模型列表
+### `GET /api/v0/client/settings?scope=main|model` —— 客户端配置 / 模型列表
 
-> v0.1 暂未消费此接口。v0.2 将基于此实现 `deepseek_list_models` / `current_chat_state`。
+v0.2 起被 `deepseek_chat_settings_view` 工具消费（READ 档，永不写）。
 
 `biz_data` 在主页未登录时返回 `null`（`biz_code: 1, biz_msg: SETTINGS_NOT_FOUND`），登录态下返回模型 / feature flag 列表。
+
+`scope=main` 时（典型字段子集，仅类型）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `features[]` | array | 功能开关列表（含 `name`/`enabled`/`scope`） |
+| `defaults.model` | string | 当前账号默认 model 标识 |
+| `defaults.thinking_enabled` | boolean | 默认是否开"深度思考" |
+| `defaults.search_enabled` | boolean | 默认是否开"联网搜索" |
+| `experiment_flags` | object | 实验组 flag 字典 |
+
+`scope=model` 时（典型字段子集，仅类型）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `models[]` | array | 可用 model 列表 |
+| `models[].id` | string | model 标识（如 `deepseek-chat` / `deepseek-reasoner`） |
+| `models[].name` | string | 显示名 |
+| `models[].available` | boolean | 当前账号是否可用 |
+| `models[].quota.*` | object? | 配额信息（按 model 而异） |
+
+> 字段名因服务端版本而异，bridge 透传 `biz_data` 不做强 schema。本工具语义是
+> "**只读快照**"，永远不会触发写或切换。
 
 ---
 
