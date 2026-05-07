@@ -622,63 +622,100 @@ function renderStaticHtml(payload) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DeepSeek Branch Report - ${title.replace(/[<>&"]/g, '')}</title>
 <style>
-:root { color-scheme: light dark; --bg:#0f1115; --panel:#171a21; --muted:#9aa4b2; --text:#e8edf3; --line:#303645; --accent:#7aa2ff; --ok:#68d391; --warn:#f6ad55; }
-@media (prefers-color-scheme: light) { :root { --bg:#f6f7fb; --panel:#ffffff; --muted:#5c6675; --text:#18202f; --line:#dde3ee; --accent:#2458d3; --ok:#168a45; --warn:#a15c00; } }
+:root { color-scheme: light dark; --bg:#0b1020; --surface:#101827; --panel:#111827; --panel2:#172033; --soft:#1f2a44; --text:#eef2ff; --muted:#9aa7bd; --line:#26334d; --accent:#8b5cf6; --accent2:#60a5fa; --ok:#34d399; --warn:#fbbf24; --danger:#fb7185; --shadow:0 24px 80px rgba(0,0,0,.35); }
+@media (prefers-color-scheme: light) { :root { --bg:#f4f7fb; --surface:#eef2ff; --panel:#ffffff; --panel2:#f8fafc; --soft:#eef2ff; --text:#101827; --muted:#64748b; --line:#dde6f3; --accent:#6d28d9; --accent2:#2563eb; --ok:#059669; --warn:#b45309; --danger:#e11d48; --shadow:0 24px 70px rgba(15,23,42,.12); } }
 * { box-sizing: border-box; }
-body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
+body { margin:0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:radial-gradient(circle at top left, rgba(139,92,246,.18), transparent 34%), var(--bg); color:var(--text); }
 button, input { font: inherit; }
-.app { display:grid; grid-template-columns: 320px minmax(420px, 1fr) 360px; height:100vh; gap:1px; background:var(--line); }
-.pane { background:var(--panel); overflow:auto; }
-.left, .right { padding:16px; }
-.main { padding:20px; }
-h1, h2, h3 { margin:0 0 10px; }
-h1 { font-size:18px; line-height:1.35; }
-h2 { font-size:14px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; margin-top:22px; }
+button { color:inherit; }
+.app { display:grid; grid-template-columns: 340px minmax(460px, 1fr) 360px; height:100vh; gap:16px; padding:16px; }
+.pane { background:color-mix(in srgb, var(--panel) 94%, transparent); border:1px solid var(--line); border-radius:24px; box-shadow:var(--shadow); overflow:auto; }
+.left, .right { padding:18px; }
+.main { padding:0; }
+.main-inner { max-width:980px; margin:0 auto; padding:18px 22px 32px; }
+.path-header { position:sticky; top:0; z-index:5; padding:18px 22px 14px; background:linear-gradient(180deg, var(--panel) 84%, color-mix(in srgb, var(--panel) 0%, transparent)); border-bottom:1px solid var(--line); backdrop-filter: blur(16px); }
+h1, h2, h3, p { margin:0; }
+h1 { font-size:19px; line-height:1.35; letter-spacing:-.02em; }
+h2 { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.09em; margin:22px 0 10px; }
 .muted { color:var(--muted); }
-.stats { display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin:14px 0; }
-.stat { border:1px solid var(--line); border-radius:10px; padding:10px; }
-.stat strong { display:block; font-size:20px; }
-.list { display:flex; flex-direction:column; gap:8px; }
-.item { width:100%; border:1px solid var(--line); border-radius:10px; padding:10px; background:transparent; color:var(--text); text-align:left; cursor:pointer; }
-.item:hover, .item.selected { border-color:var(--accent); }
-.badge { display:inline-block; border:1px solid var(--line); border-radius:999px; padding:2px 7px; margin:2px 4px 2px 0; color:var(--muted); font-size:12px; }
-.badge.active { color:var(--ok); border-color:var(--ok); }
-.badge.warn { color:var(--warn); border-color:var(--warn); }
-.message { border:1px solid var(--line); border-radius:14px; padding:14px; margin:12px 0; background:rgba(127,127,127,.04); }
-.message.selected { border-color:var(--accent); }
-.role { font-weight:700; }
-.content { white-space:pre-wrap; line-height:1.55; margin-top:10px; }
-.fork { border-left:3px solid var(--accent); margin:12px 0 18px; padding:10px 0 10px 12px; }
-.choices { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
-.choice { border:1px solid var(--line); border-radius:999px; padding:6px 10px; background:transparent; color:var(--text); cursor:pointer; }
-.choice.active { border-color:var(--ok); color:var(--ok); }
-.detail { border:1px solid var(--line); border-radius:12px; padding:12px; margin:10px 0; }
-.cmd { width:100%; border:1px solid var(--line); border-radius:10px; padding:10px; background:rgba(127,127,127,.08); color:var(--text); text-align:left; margin:8px 0; word-break:break-all; cursor:pointer; }
-.search { width:100%; border:1px solid var(--line); background:transparent; color:var(--text); padding:10px; border-radius:10px; margin:8px 0 12px; }
-@media (max-width: 1100px) { .app { grid-template-columns:1fr; height:auto; } .pane { min-height:30vh; } }
+.hero { padding:14px; border-radius:20px; background:linear-gradient(135deg, color-mix(in srgb, var(--accent) 18%, var(--panel2)), var(--panel2)); border:1px solid color-mix(in srgb, var(--accent) 28%, var(--line)); }
+.session-id { margin-top:8px; font-size:12px; color:var(--muted); word-break:break-all; }
+.stats { display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin:14px 0; }
+.stat { border:1px solid var(--line); border-radius:16px; padding:12px; background:var(--panel2); }
+.stat strong { display:block; font-size:22px; letter-spacing:-.03em; }
+.tabs { display:grid; grid-template-columns: repeat(3, 1fr); gap:6px; padding:5px; border:1px solid var(--line); border-radius:16px; background:var(--panel2); margin:12px 0; position:sticky; top:0; z-index:4; }
+.tab { border:0; border-radius:12px; padding:8px 6px; background:transparent; cursor:pointer; color:var(--muted); }
+.tab.active { background:var(--soft); color:var(--text); box-shadow:0 1px 8px rgba(0,0,0,.08); }
+.panel-section { display:none; }
+.panel-section.active { display:block; }
+.list { display:flex; flex-direction:column; gap:9px; }
+.item { width:100%; border:1px solid transparent; border-radius:16px; padding:12px; background:var(--panel2); color:var(--text); text-align:left; cursor:pointer; transition:.15s ease; }
+.item:hover { transform:translateY(-1px); border-color:color-mix(in srgb, var(--accent2) 40%, var(--line)); }
+.item.selected { border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+.item-title { display:flex; justify-content:space-between; gap:8px; font-weight:700; }
+.item-sub { margin-top:5px; font-size:12px; color:var(--muted); }
+.pills { margin-top:8px; }
+.badge { display:inline-flex; align-items:center; border:1px solid var(--line); border-radius:999px; padding:3px 8px; margin:2px 4px 2px 0; color:var(--muted); font-size:11px; line-height:1.2; background:color-mix(in srgb, var(--panel2) 70%, transparent); }
+.badge.active { color:var(--ok); border-color:color-mix(in srgb, var(--ok) 55%, var(--line)); }
+.badge.warn { color:var(--warn); border-color:color-mix(in srgb, var(--warn) 55%, var(--line)); }
+.badge.branch { color:var(--accent2); border-color:color-mix(in srgb, var(--accent2) 55%, var(--line)); }
+.search { width:100%; border:1px solid var(--line); background:var(--panel2); color:var(--text); padding:11px 12px; border-radius:14px; margin:4px 0 12px; outline:none; }
+.search:focus { border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent); }
+.path-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:10px; }
+.message { border:1px solid var(--line); border-radius:22px; padding:16px; margin:14px 0; background:var(--panel); transition:.15s ease; }
+.message.USER { margin-left:auto; max-width:86%; background:linear-gradient(135deg, color-mix(in srgb, var(--accent2) 16%, var(--panel2)), var(--panel2)); }
+.message.ASSISTANT { margin-right:auto; max-width:94%; }
+.message.selected { border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+.msg-head { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; align-items:center; }
+.role { font-weight:750; letter-spacing:-.01em; }
+.content { white-space:pre-wrap; line-height:1.68; margin-top:12px; font-size:14px; }
+.content.collapsed { max-height:360px; overflow:hidden; position:relative; }
+.content.collapsed:after { content:""; position:absolute; left:0; right:0; bottom:0; height:72px; background:linear-gradient(transparent, var(--panel)); }
+.message.USER .content.collapsed:after { background:linear-gradient(transparent, var(--panel2)); }
+.show-more { border:0; background:transparent; color:var(--accent2); padding:8px 0 0; cursor:pointer; font-weight:650; }
+.fork { border:1px solid color-mix(in srgb, var(--accent) 40%, var(--line)); margin:16px 0 20px; padding:14px; border-radius:18px; background:linear-gradient(135deg, color-mix(in srgb, var(--accent) 12%, var(--panel2)), var(--panel2)); }
+.fork-title { display:flex; align-items:center; justify-content:space-between; gap:8px; font-weight:750; }
+.choices { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+.choice { border:1px solid var(--line); border-radius:999px; padding:7px 11px; background:var(--panel); color:var(--text); cursor:pointer; }
+.choice.active { border-color:var(--ok); color:var(--ok); background:color-mix(in srgb, var(--ok) 10%, var(--panel)); }
+.detail { border:1px solid var(--line); border-radius:18px; padding:14px; margin:10px 0; background:var(--panel2); }
+.kv { display:grid; grid-template-columns:110px 1fr; gap:8px; padding:7px 0; border-bottom:1px solid color-mix(in srgb, var(--line) 55%, transparent); }
+.kv:last-child { border-bottom:0; }
+.cmd { width:100%; border:1px solid var(--line); border-radius:16px; padding:12px; background:var(--panel2); color:var(--text); text-align:left; margin:9px 0; word-break:break-all; cursor:pointer; transition:.15s ease; }
+.cmd:hover { border-color:var(--accent2); }
+.cmd.copied { border-color:var(--ok); color:var(--ok); }
+.empty { color:var(--muted); border:1px dashed var(--line); border-radius:16px; padding:14px; }
+@media (max-width: 1180px) { .app { grid-template-columns:1fr; height:auto; } .pane { min-height:30vh; } .path-header { position:relative; } }
 </style>
 </head>
 <body>
 <div class="app">
   <aside class="pane left">
-    <h1 id="title"></h1>
-    <div class="muted" id="session-meta"></div>
+    <div class="hero">
+      <h1 id="title"></h1>
+      <div class="session-id" id="session-meta"></div>
+    </div>
     <div class="stats" id="stats"></div>
-    <h2>Tags</h2>
-    <div class="list" id="tags"></div>
-    <h2>Leaves</h2>
+    <div class="tabs">
+      <button class="tab active" data-tab="leaves">Leaves</button>
+      <button class="tab" data-tab="branches">Branches</button>
+      <button class="tab" data-tab="tags">Tags</button>
+    </div>
     <input class="search" id="leaf-filter" placeholder="Filter leaf / tag">
-    <div class="list" id="leaves"></div>
-    <h2>Branch Points</h2>
-    <div class="list" id="branch-points"></div>
+    <section class="panel-section active" id="panel-leaves"><div class="list" id="leaves"></div></section>
+    <section class="panel-section" id="panel-branches"><div class="list" id="branch-points"></div></section>
+    <section class="panel-section" id="panel-tags"><div class="list" id="tags"></div></section>
   </aside>
   <main class="pane main">
-    <h1 id="path-title"></h1>
-    <div class="muted" id="path-meta"></div>
-    <div id="path"></div>
+    <div class="path-header">
+      <h1 id="path-title"></h1>
+      <div class="muted" id="path-meta"></div>
+      <div class="path-actions" id="path-actions"></div>
+    </div>
+    <div class="main-inner" id="path"></div>
   </main>
   <aside class="pane right">
-    <h1>Details</h1>
+    <h1>Inspector</h1>
     <div id="details" class="detail muted">选择一条消息查看详情。</div>
     <h2>Copy Commands</h2>
     <div id="commands"></div>
@@ -696,6 +733,7 @@ h2 { font-size:14px; color:var(--muted); text-transform:uppercase; letter-spacin
   var selectedLeaf = data.defaultLeafMessageId;
   var selectedMessage = null;
   var leafFilter = '';
+  var activeTab = 'leaves';
 
   function byId(id){ return document.getElementById(id); }
   function node(id){ return nodes[String(id)] || null; }
@@ -706,6 +744,22 @@ h2 { font-size:14px; color:var(--muted); text-transform:uppercase; letter-spacin
     return el;
   }
   function clear(el){ while (el.firstChild) el.removeChild(el.firstChild); }
+  function shortDate(value){
+    if (!value) return '';
+    return String(value).replace('T', ' ').replace(/\\.\\d+Z$/, 'Z');
+  }
+  function descendantsCount(startId){
+    var count = 0, stack = [Number(startId)], seen = {};
+    while (stack.length) {
+      var id = stack.pop();
+      if (seen[String(id)]) continue;
+      seen[String(id)] = true;
+      count += 1;
+      var n = node(id);
+      (n && n.childrenIds || []).forEach(function(cid){ stack.push(cid); });
+    }
+    return Math.max(0, count - 1);
+  }
   function pathIdsForLeaf(leafId){
     var ids = [], seen = {}, cur = Number(leafId);
     while (cur != null && node(cur) && !seen[String(cur)]) {
@@ -754,10 +808,12 @@ h2 { font-size:14px; color:var(--muted); text-transform:uppercase; letter-spacin
   function renderTags(){
     var box = byId('tags'); clear(box);
     var names = Object.keys(annotations.tags || {});
-    if (!names.length) { box.appendChild(make('div','muted','No tags yet.')); return; }
+    if (!names.length) { box.appendChild(make('div','empty','No tags yet.')); return; }
     names.forEach(function(name){
       var tag = annotations.tags[name];
-      var btn = make('button','item', name + ' · leaf ' + tag.leafMessageId);
+      var btn = make('button','item');
+      btn.appendChild(make('div','item-title', name));
+      btn.appendChild(make('div','item-sub','leaf ' + tag.leafMessageId + (tag.note ? ' · ' + tag.note : '')));
       btn.onclick = function(){ selectLeaf(tag.leafMessageId); };
       box.appendChild(btn);
     });
@@ -772,11 +828,16 @@ h2 { font-size:14px; color:var(--muted); text-transform:uppercase; letter-spacin
     }).forEach(function(leaf){
       var id = String(leaf.leafMessageId);
       var btn = make('button','item' + (Number(id) === Number(selectedLeaf) ? ' selected' : ''));
-      btn.appendChild(make('div','role','leaf ' + id));
-      btn.appendChild(make('div','muted','path ' + leaf.pathLength + ' · ' + (leaf.lastInsertedAt || '')));
-      if (leaf.isActiveLeaf) btn.appendChild(make('span','badge active','active'));
-      if (leaf.hasIncomplete) btn.appendChild(make('span','badge warn','incomplete'));
-      (tagMap[id] || []).forEach(function(t){ btn.appendChild(make('span','badge', t)); });
+      var title = make('div','item-title');
+      title.appendChild(make('span','', 'Leaf ' + id));
+      title.appendChild(make('span','muted', String(leaf.pathLength) + ' msgs'));
+      btn.appendChild(title);
+      btn.appendChild(make('div','item-sub', shortDate(leaf.lastInsertedAt) + ' · ' + (leaf.branchTrail || []).length + ' decisions'));
+      var pills = make('div','pills');
+      if (leaf.isActiveLeaf) pills.appendChild(make('span','badge active','active'));
+      if (leaf.hasIncomplete) pills.appendChild(make('span','badge warn','incomplete'));
+      (tagMap[id] || []).forEach(function(t){ pills.appendChild(make('span','badge', t)); });
+      btn.appendChild(pills);
       btn.onclick = function(){ selectLeaf(leaf.leafMessageId); };
       box.appendChild(btn);
     });
@@ -785,8 +846,11 @@ h2 { font-size:14px; color:var(--muted); text-transform:uppercase; letter-spacin
     var box = byId('branch-points'); clear(box);
     (summary.branchPoints || []).forEach(function(bp){
       var btn = make('button','item');
-      btn.appendChild(make('div','role','msg ' + bp.messageId + ' · ' + bp.childrenCount + ' choices'));
-      btn.appendChild(make('div','muted','depth ' + bp.depth + (bp.activeChildId ? ' · active child ' + bp.activeChildId : '')));
+      var title = make('div','item-title');
+      title.appendChild(make('span','', 'Decision ' + bp.messageId));
+      title.appendChild(make('span','badge branch', bp.childrenCount + ' choices'));
+      btn.appendChild(title);
+      btn.appendChild(make('div','item-sub','depth ' + bp.depth + (bp.activeChildId ? ' · active child ' + bp.activeChildId : '')));
       btn.onclick = function(){
         var leaf = bp.activeChildId ? findLeafFrom(bp.activeChildId) : findLeafFrom((bp.children && bp.children[0] && bp.children[0].messageId) || bp.messageId);
         selectLeaf(leaf);
@@ -797,11 +861,14 @@ h2 { font-size:14px; color:var(--muted); text-transform:uppercase; letter-spacin
   }
   function renderFork(n, currentChildId){
     var div = make('div','fork');
-    div.appendChild(make('div','role','Branch point at msg ' + n.messageId));
+    var header = make('div','fork-title');
+    header.appendChild(make('span','', 'Decision point #' + n.messageId));
+    header.appendChild(make('span','badge branch', (n.childrenIds || []).length + ' choices'));
+    div.appendChild(header);
     var choices = make('div','choices');
     (n.childrenIds || []).forEach(function(cid){
       var child = node(cid);
-      var b = make('button','choice' + (Number(cid) === Number(currentChildId) ? ' active' : ''), 'child ' + cid + ' · ' + ((child && child.status) || 'UNKNOWN'));
+      var b = make('button','choice' + (Number(cid) === Number(currentChildId) ? ' active' : ''), 'child ' + cid + ' · +' + descendantsCount(cid) + ' · ' + ((child && child.status) || 'UNKNOWN'));
       b.onclick = function(){ selectLeaf(findLeafFrom(cid)); };
       choices.appendChild(b);
     });
@@ -812,22 +879,45 @@ h2 { font-size:14px; color:var(--muted); text-transform:uppercase; letter-spacin
     var path = pathIdsForLeaf(selectedLeaf);
     var box = byId('path'); clear(box);
     byId('path-title').textContent = 'Leaf ' + selectedLeaf;
-    byId('path-meta').textContent = path.length + ' messages · redaction ' + detectRedactionMode();
+    byId('path-meta').textContent = path.length + ' messages · redaction ' + detectRedactionMode() + ' · ' + (pathForks(path).length) + ' decisions';
+    renderPathActions(path);
     for (var i = 0; i < path.length; i += 1) {
       var n = node(path[i]);
       if (!n) continue;
-      var card = make('section','message' + (Number(selectedMessage) === Number(n.messageId) ? ' selected' : ''));
+      var card = make('section','message ' + (n.role || 'UNKNOWN') + (Number(selectedMessage) === Number(n.messageId) ? ' selected' : ''));
       card.onclick = (function(id){ return function(){ selectMessage(id); }; })(n.messageId);
-      card.appendChild(make('div','role', (n.role || '?') + ' · msg ' + n.messageId + ' · ' + (n.status || 'UNKNOWN')));
-      card.appendChild(make('div','muted', (n.insertedAt || '') + ' · chars ' + (n.contentLength == null ? '-' : n.contentLength)));
-      var content = make('div','content', typeof n.content === 'string' ? n.content : '[content unavailable: ' + (n.contentRedactedMode || 'unknown') + ']');
+      var head = make('div','msg-head');
+      head.appendChild(make('div','role', (n.role || '?') + ' · msg ' + n.messageId));
+      head.appendChild(make('div','muted', (n.status || 'UNKNOWN') + ' · ' + shortDate(n.insertedAt)));
+      card.appendChild(head);
+      card.appendChild(make('div','muted','chars ' + (n.contentLength == null ? '-' : n.contentLength)));
+      var text = typeof n.content === 'string' ? n.content : '[content unavailable: ' + (n.contentRedactedMode || 'unknown') + ']';
+      var content = make('div','content' + (text.length > 1200 ? ' collapsed' : ''), text);
       card.appendChild(content);
+      if (text.length > 1200) {
+        var more = make('button','show-more','Show more');
+        more.onclick = (function(el, btn){ return function(ev){ ev.stopPropagation(); el.classList.toggle('collapsed'); btn.textContent = el.classList.contains('collapsed') ? 'Show more' : 'Show less'; }; })(content, more);
+        card.appendChild(more);
+      }
       if (n.contentPreviewTruncated) card.appendChild(make('div','badge warn','preview truncated'));
       box.appendChild(card);
       if (n.childrenIds && n.childrenIds.length > 1) {
         box.appendChild(renderFork(n, path[i + 1]));
       }
     }
+  }
+  function pathForks(path){
+    return path.filter(function(id){ var n = node(id); return n && n.childrenIds && n.childrenIds.length > 1; });
+  }
+  function renderPathActions(path){
+    var box = byId('path-actions'); clear(box);
+    var tagMap = tagsByLeaf();
+    (tagMap[String(selectedLeaf)] || []).forEach(function(t){ box.appendChild(make('span','badge', t)); });
+    if (Number(selectedLeaf) === Number(tree.currentMessageId)) box.appendChild(make('span','badge active','active leaf'));
+    box.appendChild(make('span','badge branch', pathForks(path).length + ' decisions'));
+    var copy = make('button','choice','Copy export command');
+    copy.onclick = function(){ copyCommand('node scripts/deepseek-branch-manager.js export ' + data.sessionId + ' --leaf ' + selectedLeaf + ' --format api-json', copy); };
+    box.appendChild(copy);
   }
   function detectRedactionMode(){
     var keys = Object.keys(nodes);
@@ -846,7 +936,7 @@ h2 { font-size:14px; color:var(--muted); text-transform:uppercase; letter-spacin
       ['status', n.status], ['depth', n.depth], ['sibling', String(n.siblingIndex) + '/' + String(n.siblingCount)],
       ['contentLength', n.contentLength], ['insertedAt', n.insertedAt]
     ].forEach(function(pair){
-      var row = make('div','');
+      var row = make('div','kv');
       row.appendChild(make('span','muted', pair[0] + ': '));
       row.appendChild(make('span','', pair[1] == null ? '-' : pair[1]));
       box.appendChild(row);
@@ -854,7 +944,7 @@ h2 { font-size:14px; color:var(--muted); text-transform:uppercase; letter-spacin
   }
   function commandButton(text){
     var btn = make('button','cmd', text);
-    btn.onclick = function(){ copyCommand(text); };
+    btn.onclick = function(){ copyCommand(text, btn); };
     return btn;
   }
   function renderCommands(){
@@ -865,10 +955,36 @@ h2 { font-size:14px; color:var(--muted); text-transform:uppercase; letter-spacin
       box.appendChild(commandButton('node scripts/deepseek-branch-manager.js path ' + data.sessionId + ' --leaf ' + selectedLeaf));
     }
   }
-  function copyCommand(text){
+  function copyCommand(text, button){
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).catch(function(){});
+      navigator.clipboard.writeText(text).then(function(){
+        if (!button) return;
+        var old = button.textContent;
+        button.classList.add('copied');
+        button.textContent = 'Copied: ' + old;
+        setTimeout(function(){ button.classList.remove('copied'); button.textContent = old; }, 1200);
+      }).catch(function(){});
     }
+  }
+  function syncHash(){
+    try { location.hash = 'leaf=' + encodeURIComponent(selectedLeaf) + '&msg=' + encodeURIComponent(selectedMessage || ''); } catch (_) {}
+  }
+  function restoreHash(){
+    var raw = String(location.hash || '').replace(/^#/, '');
+    if (!raw) return;
+    var params = {};
+    raw.split('&').forEach(function(part){
+      var bits = part.split('=');
+      params[decodeURIComponent(bits[0] || '')] = decodeURIComponent(bits[1] || '');
+    });
+    if (params.leaf && node(Number(params.leaf))) selectedLeaf = Number(params.leaf);
+    if (params.msg && node(Number(params.msg))) selectedMessage = Number(params.msg);
+  }
+  function setTab(name){
+    activeTab = name;
+    Array.from(document.querySelectorAll('.tab')).forEach(function(tab){ tab.classList.toggle('active', tab.getAttribute('data-tab') === name); });
+    ['leaves','branches','tags'].forEach(function(key){ byId('panel-' + key).classList.toggle('active', key === name); });
+    byId('leaf-filter').style.display = name === 'leaves' ? '' : 'none';
   }
   function selectLeaf(leafId){
     selectedLeaf = Number(leafId);
@@ -877,21 +993,29 @@ h2 { font-size:14px; color:var(--muted); text-transform:uppercase; letter-spacin
     renderPath();
     renderDetails();
     renderCommands();
+    syncHash();
   }
   function selectMessage(messageId){
     selectedMessage = Number(messageId);
     renderPath();
     renderDetails();
     renderCommands();
+    syncHash();
   }
   byId('leaf-filter').addEventListener('input', function(ev){
     leafFilter = ev.target.value || '';
     renderLeaves();
   });
+  Array.from(document.querySelectorAll('.tab')).forEach(function(tab){
+    tab.addEventListener('click', function(){ setTab(tab.getAttribute('data-tab')); });
+  });
+  restoreHash();
   renderHeader();
   renderTags();
   renderBranchPoints();
-  selectLeaf(selectedLeaf);
+  setTab(activeTab);
+  if (selectedMessage) { selectLeaf(selectedLeaf); selectMessage(selectedMessage); }
+  else selectLeaf(selectedLeaf);
 })();
 </script>
 </body>
