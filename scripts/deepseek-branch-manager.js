@@ -23,10 +23,11 @@ function usage() {
     '  tag <sessionId> --leaf <id> --name <tag> [--note <text>]',
     '  export <sessionId> --leaf <id|tag> --format api-json|md [--out <path>]',
     '  html <sessionId> [--leaf <id|tag>] [--out <path>]  Generate a static HTML report',
+    '  index-html [--out <path>]                Generate workspace index HTML',
     '',
     'Options:',
     '  --workdir <path>         Local branch workspace (default: .deepseek-branches)',
-    '  --redact trunc|full|off  scan content mode (default: trunc)',
+    '  --redact trunc|full|off  scan content mode (default: full)',
     '  --trunc-len <n>          truncation length for scan',
     '  --content-max-len <n>    bridge hard content limit for scan',
     '  --from <messageId>       export a suffix of the selected path',
@@ -40,7 +41,7 @@ function usage() {
 function parseArgv(argv) {
   const opts = {
     workdir: DEFAULT_WORKDIR,
-    redact: 'trunc',
+    redact: 'full',
     truncLen: null,
     contentMaxLen: null,
     pretty: false,
@@ -128,6 +129,8 @@ function workspace(opts) {
     summaryFile: (sessionId) => path.join(root, 'indexes', sessionId, 'summary.json'),
     annotationFile: (sessionId) => path.join(root, 'annotations', `${sessionId}.json`),
     exportDir: (sessionId) => path.join(root, 'exports', sessionId),
+    reportFile: (sessionId) => path.join(root, 'exports', sessionId, 'report.html'),
+    indexHtmlFile: () => path.join(root, 'index.html'),
   };
 }
 
@@ -319,7 +322,7 @@ async function cmdScan(sessionId, opts) {
   const indexDir = ws.indexDir(sessionId);
   ensureDir(indexDir);
   const tmpFile = path.join(indexDir, 'tree.raw.json');
-  const args = ['get-session-tree', sessionId, '--redact', opts.redact || 'trunc', '--pretty'];
+  const args = ['get-session-tree', sessionId, '--redact', opts.redact || 'full', '--pretty'];
   if (opts.truncLen) args.push('--trunc-len', String(opts.truncLen));
   if (opts.contentMaxLen) args.push('--content-max-len', String(opts.contentMaxLen));
 
@@ -1023,6 +1026,241 @@ h2 { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacin
 `;
 }
 
+function listWorkspaceSessions(opts) {
+  const ws = workspace(opts);
+  const indexesDir = path.join(ws.root, 'indexes');
+  if (!fs.existsSync(indexesDir)) return [];
+  const sessionIds = fs.readdirSync(indexesDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
+  const sessions = [];
+  for (const sessionId of sessionIds) {
+    const summaryFile = ws.summaryFile(sessionId);
+    if (!fs.existsSync(summaryFile)) continue;
+    let summary;
+    try { summary = readJson(summaryFile); } catch (_) { continue; }
+    const annotations = loadAnnotations(sessionId, opts);
+    const reportFile = ws.reportFile(sessionId);
+    const tagNames = Object.keys(annotations.tags || {});
+    const activeLeaf = (summary.leaves || []).find((leaf) => leaf.isActiveLeaf) || null;
+    sessions.push({
+      sessionId,
+      title: (summary.session && summary.session.title) || sessionId,
+      updatedAt: summary.session && summary.session.updatedAt,
+      createdAt: summary.session && summary.session.createdAt,
+      modelType: summary.session && summary.session.modelType,
+      agent: summary.session && summary.session.agent,
+      stats: summary.stats || {},
+      currentMessageId: summary.currentMessageId,
+      activeLeafMessageId: activeLeaf ? activeLeaf.leafMessageId : summary.currentMessageId,
+      tags: tagNames.map((name) => Object.assign({ name }, annotations.tags[name] || {})),
+      hasReport: fs.existsSync(reportFile),
+      reportHref: path.relative(ws.root, reportFile).replace(/\\/g, '/'),
+      summaryHref: path.relative(ws.root, summaryFile).replace(/\\/g, '/'),
+      generatedAt: summary.generatedAt || null,
+    });
+  }
+  sessions.sort((a, b) => {
+    const at = Date.parse(a.updatedAt || a.generatedAt || '') || 0;
+    const bt = Date.parse(b.updatedAt || b.generatedAt || '') || 0;
+    return bt - at;
+  });
+  return sessions;
+}
+
+function buildIndexHtmlPayload(opts) {
+  const ws = workspace(opts);
+  const sessions = listWorkspaceSessions(opts);
+  return {
+    generatedAt: new Date().toISOString(),
+    workdir: ws.root,
+    sessions,
+    stats: {
+      sessionCount: sessions.length,
+      reportCount: sessions.filter((s) => s.hasReport).length,
+      totalMessages: sessions.reduce((sum, s) => sum + Number(s.stats.totalMessages || 0), 0),
+      totalLeaves: sessions.reduce((sum, s) => sum + Number(s.stats.leafCount || 0), 0),
+      totalBranchPoints: sessions.reduce((sum, s) => sum + Number(s.stats.branchPointCount || 0), 0),
+    },
+  };
+}
+
+function renderWorkspaceIndexHtml(payload) {
+  const dataJson = escapeJsonForScript(payload);
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeepSeek Branch Workspace</title>
+<style>
+:root { color-scheme: light dark; --bg:#0b1020; --panel:#111827; --panel2:#172033; --text:#eef2ff; --muted:#9aa7bd; --line:#26334d; --accent:#8b5cf6; --accent2:#60a5fa; --ok:#34d399; --warn:#fbbf24; --shadow:0 24px 80px rgba(0,0,0,.35); }
+@media (prefers-color-scheme: light) { :root { --bg:#f4f7fb; --panel:#ffffff; --panel2:#f8fafc; --text:#101827; --muted:#64748b; --line:#dde6f3; --accent:#6d28d9; --accent2:#2563eb; --ok:#059669; --warn:#b45309; --shadow:0 24px 70px rgba(15,23,42,.12); } }
+* { box-sizing:border-box; }
+body { margin:0; font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:radial-gradient(circle at top left, rgba(139,92,246,.18), transparent 34%), var(--bg); color:var(--text); }
+a { color:inherit; text-decoration:none; }
+.wrap { max-width:1180px; margin:0 auto; padding:28px 20px 44px; }
+.hero { display:grid; grid-template-columns:1fr auto; gap:18px; align-items:end; padding:22px; border:1px solid var(--line); border-radius:26px; background:linear-gradient(135deg, color-mix(in srgb, var(--accent) 18%, var(--panel2)), var(--panel)); box-shadow:var(--shadow); }
+h1 { margin:0; font-size:28px; letter-spacing:-.04em; }
+.muted { color:var(--muted); }
+.stats { display:grid; grid-template-columns:repeat(5, minmax(120px, 1fr)); gap:12px; margin:18px 0; }
+.stat { border:1px solid var(--line); border-radius:18px; padding:14px; background:var(--panel); }
+.stat strong { display:block; font-size:24px; letter-spacing:-.03em; }
+.toolbar { position:sticky; top:0; z-index:4; display:flex; gap:10px; align-items:center; margin:18px 0; padding:12px; border:1px solid var(--line); border-radius:18px; background:color-mix(in srgb, var(--panel) 92%, transparent); backdrop-filter:blur(14px); }
+.search { flex:1; border:1px solid var(--line); background:var(--panel2); color:var(--text); padding:12px 14px; border-radius:14px; outline:none; }
+.search:focus { border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent); }
+.toggle { border:1px solid var(--line); border-radius:999px; padding:9px 12px; background:var(--panel2); color:var(--text); cursor:pointer; }
+.toggle.active { border-color:var(--ok); color:var(--ok); }
+.grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(340px, 1fr)); gap:14px; }
+.card { border:1px solid var(--line); border-radius:22px; padding:16px; background:var(--panel); box-shadow:0 12px 40px rgba(0,0,0,.12); transition:.15s ease; }
+.card:hover { transform:translateY(-2px); border-color:color-mix(in srgb, var(--accent2) 45%, var(--line)); }
+.title { font-weight:780; font-size:17px; letter-spacing:-.02em; }
+.sid { margin-top:6px; font-size:12px; color:var(--muted); word-break:break-all; }
+.meta { margin-top:10px; color:var(--muted); font-size:13px; }
+.pills { margin:12px 0 4px; }
+.pill { display:inline-flex; align-items:center; border:1px solid var(--line); border-radius:999px; padding:4px 9px; margin:2px 4px 2px 0; color:var(--muted); font-size:12px; background:var(--panel2); }
+.pill.ok { color:var(--ok); border-color:color-mix(in srgb, var(--ok) 55%, var(--line)); }
+.pill.warn { color:var(--warn); border-color:color-mix(in srgb, var(--warn) 55%, var(--line)); }
+.actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }
+.btn { border:1px solid var(--line); border-radius:12px; padding:9px 10px; background:var(--panel2); cursor:pointer; }
+.btn.primary { border-color:var(--accent2); color:var(--accent2); }
+.empty { border:1px dashed var(--line); border-radius:22px; padding:22px; color:var(--muted); background:var(--panel); }
+@media (max-width:760px){ .hero { grid-template-columns:1fr; } .stats { grid-template-columns:1fr 1fr; } .toolbar { flex-wrap:wrap; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <section class="hero">
+    <div>
+      <h1>DeepSeek Branch Workspace</h1>
+      <p class="muted">搜索本地分支索引、标签，并跳转到已导出的单会话报告。</p>
+      <p class="muted" id="workdir"></p>
+    </div>
+    <div class="muted" id="generated"></div>
+  </section>
+  <section class="stats" id="stats"></section>
+  <section class="toolbar">
+    <input class="search" id="search" placeholder="Search title, sessionId, tag, leaf...">
+    <button class="toggle" id="reports-only">Reports only</button>
+  </section>
+  <section class="grid" id="cards"></section>
+</div>
+<script type="application/json" id="workspace-data">${dataJson}</script>
+<script>
+(function(){
+  'use strict';
+  var data = JSON.parse(document.getElementById('workspace-data').textContent);
+  var query = '';
+  var reportsOnly = false;
+  function byId(id){ return document.getElementById(id); }
+  function make(tag, className, text){
+    var el = document.createElement(tag);
+    if (className) el.className = className;
+    if (text != null) el.textContent = String(text);
+    return el;
+  }
+  function clear(el){ while (el.firstChild) el.removeChild(el.firstChild); }
+  function shortDate(value){ return value ? String(value).replace('T',' ').replace(/\\.\\d+Z$/, 'Z') : ''; }
+  function copy(text, button){
+    if (!navigator.clipboard || !navigator.clipboard.writeText) return;
+    navigator.clipboard.writeText(text).then(function(){
+      var old = button.textContent;
+      button.textContent = 'Copied';
+      setTimeout(function(){ button.textContent = old; }, 1000);
+    }).catch(function(){});
+  }
+  function haystack(session){
+    return [
+      session.title, session.sessionId, session.activeLeafMessageId, session.currentMessageId,
+      (session.tags || []).map(function(t){ return t.name + ' ' + t.leafMessageId + ' ' + (t.note || ''); }).join(' ')
+    ].join(' ').toLowerCase();
+  }
+  function renderStats(){
+    var box = byId('stats'); clear(box);
+    [['Sessions', data.stats.sessionCount], ['Reports', data.stats.reportCount], ['Messages', data.stats.totalMessages], ['Leaves', data.stats.totalLeaves], ['Branches', data.stats.totalBranchPoints]].forEach(function(pair){
+      var card = make('div','stat');
+      card.appendChild(make('strong','', pair[1] == null ? '-' : pair[1]));
+      card.appendChild(make('span','muted', pair[0]));
+      box.appendChild(card);
+    });
+  }
+  function renderCards(){
+    var box = byId('cards'); clear(box);
+    var sessions = (data.sessions || []).filter(function(s){
+      if (reportsOnly && !s.hasReport) return false;
+      if (!query) return true;
+      return haystack(s).indexOf(query.toLowerCase()) !== -1;
+    });
+    if (!sessions.length) {
+      box.appendChild(make('div','empty','没有匹配的本地会话索引。'));
+      return;
+    }
+    sessions.forEach(function(s){
+      var card = make('article','card');
+      card.appendChild(make('div','title', s.title || s.sessionId));
+      card.appendChild(make('div','sid', s.sessionId));
+      card.appendChild(make('div','meta', 'updated ' + shortDate(s.updatedAt) + ' · active leaf ' + (s.activeLeafMessageId || '-')));
+      var pills = make('div','pills');
+      pills.appendChild(make('span','pill', (s.stats.totalMessages || 0) + ' messages'));
+      pills.appendChild(make('span','pill', (s.stats.leafCount || 0) + ' leaves'));
+      pills.appendChild(make('span','pill', (s.stats.branchPointCount || 0) + ' branches'));
+      if (s.hasReport) pills.appendChild(make('span','pill ok','report'));
+      else pills.appendChild(make('span','pill warn','no report'));
+      (s.tags || []).forEach(function(t){ pills.appendChild(make('span','pill', t.name)); });
+      card.appendChild(pills);
+      var actions = make('div','actions');
+      if (s.hasReport) {
+        var link = make('a','btn primary','Open report');
+        link.href = s.reportHref;
+        actions.appendChild(link);
+      }
+      var htmlCmd = 'node scripts/deepseek-branch-manager.js html ' + s.sessionId + ' --force';
+      var htmlBtn = make('button','btn','Copy html command');
+      htmlBtn.onclick = function(){ copy(htmlCmd, htmlBtn); };
+      actions.appendChild(htmlBtn);
+      var scanCmd = 'node scripts/deepseek-branch-manager.js scan ' + s.sessionId;
+      var scanBtn = make('button','btn','Copy scan command');
+      scanBtn.onclick = function(){ copy(scanCmd, scanBtn); };
+      actions.appendChild(scanBtn);
+      card.appendChild(actions);
+      box.appendChild(card);
+    });
+  }
+  byId('workdir').textContent = data.workdir;
+  byId('generated').textContent = 'Generated ' + data.generatedAt;
+  byId('search').addEventListener('input', function(ev){ query = ev.target.value || ''; renderCards(); });
+  byId('reports-only').addEventListener('click', function(){
+    reportsOnly = !reportsOnly;
+    byId('reports-only').classList.toggle('active', reportsOnly);
+    renderCards();
+  });
+  renderStats();
+  renderCards();
+})();
+</script>
+</body>
+</html>
+`;
+}
+
+function cmdIndexHtml(opts) {
+  const payload = buildIndexHtmlPayload(opts);
+  const body = renderWorkspaceIndexHtml(payload);
+  const outPath = path.resolve(opts.out || workspace(opts).indexHtmlFile());
+  if (fs.existsSync(outPath) && !opts.force) {
+    throw new Error(`output exists; pass --force to overwrite: ${outPath}`);
+  }
+  ensureDir(path.dirname(outPath));
+  fs.writeFileSync(outPath, body, 'utf8');
+  return {
+    ok: true,
+    path: outPath,
+    sessions: payload.stats.sessionCount,
+    reports: payload.stats.reportCount,
+  };
+}
+
 function cmdHtml(sessionId, opts) {
   const payload = buildHtmlReportPayload(sessionId, opts);
   const body = renderStaticHtml(payload);
@@ -1048,6 +1286,10 @@ async function main(argv) {
   const command = positional[0];
   if (!command || opts.help) {
     process.stdout.write(usage() + '\n');
+    return 0;
+  }
+  if (command === 'index-html') {
+    printJson(cmdIndexHtml(opts), opts);
     return 0;
   }
   const sessionId = requireSessionId(positional);
@@ -1082,4 +1324,6 @@ module.exports = {
   pathIdsForLeaf,
   buildHtmlReportPayload,
   renderStaticHtml,
+  buildIndexHtmlPayload,
+  renderWorkspaceIndexHtml,
 };
