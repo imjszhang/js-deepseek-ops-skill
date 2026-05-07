@@ -24,3 +24,4 @@ coverage/
 *.local
 
 work_dir/
+.deepseek-branches/
