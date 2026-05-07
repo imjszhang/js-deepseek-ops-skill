@@ -22,6 +22,7 @@ function usage() {
     '  diff <sessionId> --a <id|tag> --b <id|tag>  Compare two leaf paths',
     '  tag <sessionId> --leaf <id> --name <tag> [--note <text>]',
     '  export <sessionId> --leaf <id|tag> --format api-json|md [--out <path>]',
+    '  html <sessionId> [--leaf <id|tag>] [--out <path>]  Generate a static HTML report',
     '',
     'Options:',
     '  --workdir <path>         Local branch workspace (default: .deepseek-branches)',
@@ -30,6 +31,7 @@ function usage() {
     '  --content-max-len <n>    bridge hard content limit for scan',
     '  --from <messageId>       export a suffix of the selected path',
     '  --max-chars <n>          export content budget',
+    '  --max-preview-chars <n>  per-message preview budget in HTML reports',
     '  --pretty                 pretty JSON output',
     '  --force                  allow overwriting export files',
   ].join('\n');
@@ -52,6 +54,7 @@ function parseArgv(argv) {
     out: null,
     from: null,
     maxChars: null,
+    maxPreviewChars: null,
   };
   const positional = [];
   for (let i = 0; i < argv.length; i += 1) {
@@ -91,6 +94,8 @@ function parseArgv(argv) {
     else if (arg.startsWith('--from=')) eatEq('from', '--from=');
     else if (arg === '--max-chars') eat('maxChars');
     else if (arg.startsWith('--max-chars=')) eatEq('maxChars', '--max-chars=');
+    else if (arg === '--max-preview-chars') eat('maxPreviewChars');
+    else if (arg.startsWith('--max-preview-chars=')) eatEq('maxPreviewChars', '--max-preview-chars=');
     else if (arg.startsWith('-')) throw new Error(`unknown option: ${arg}`);
     else positional.push(arg);
   }
@@ -545,6 +550,374 @@ function cmdExport(sessionId, opts) {
   };
 }
 
+function previewText(value, maxChars) {
+  if (typeof value !== 'string') return { value, truncated: false };
+  if (!Number.isFinite(maxChars) || maxChars <= 0 || value.length <= maxChars) {
+    return { value, truncated: false };
+  }
+  return { value: value.slice(0, maxChars) + '...', truncated: true };
+}
+
+function cloneTreeForHtml(tree, opts) {
+  const maxPreviewChars = opts.maxPreviewChars
+    ? Number(opts.maxPreviewChars)
+    : (opts.maxChars ? Number(opts.maxChars) : 4000);
+  const nodes = {};
+  for (const [key, node] of Object.entries(tree.nodes || {})) {
+    const content = previewText(node.content, maxPreviewChars);
+    const thinking = previewText(node.thinkingContent, maxPreviewChars);
+    nodes[key] = Object.assign({}, node, {
+      content: content.value,
+      contentPreviewTruncated: content.truncated || !!node.contentRedactedTruncated,
+      thinkingContent: thinking.value,
+      thinkingPreviewTruncated: thinking.truncated || !!node.thinkingContentRedactedTruncated,
+    });
+  }
+  return Object.assign({}, tree, { nodes });
+}
+
+function pickDefaultLeaf(tree, summary, annotations, opts) {
+  if (opts.leaf) return resolveLeaf(tree, annotations, opts.leaf);
+  const leaves = summary.leaves || [];
+  const active = leaves.find((leaf) => leaf.isActiveLeaf);
+  if (active) return active.leafMessageId;
+  if (tree.currentMessageId && nodeOf(tree, tree.currentMessageId)) return tree.currentMessageId;
+  if (leaves[0]) return leaves[0].leafMessageId;
+  return null;
+}
+
+function buildHtmlReportPayload(sessionId, opts) {
+  const { doc, tree } = loadTreeDoc(sessionId, opts);
+  const summary = cmdSummary(sessionId, opts);
+  const annotations = loadAnnotations(sessionId, opts);
+  const defaultLeafMessageId = pickDefaultLeaf(tree, summary, annotations, opts);
+  return {
+    generatedAt: new Date().toISOString(),
+    sessionId,
+    workdir: path.resolve(opts.workdir || DEFAULT_WORKDIR),
+    source: {
+      treeFile: workspace(opts).treeFile(sessionId),
+      summaryFile: workspace(opts).summaryFile(sessionId),
+      annotationFile: workspace(opts).annotationFile(sessionId),
+      scannedAt: doc.scannedAt || null,
+    },
+    defaultLeafMessageId,
+    tree: cloneTreeForHtml(tree, opts),
+    summary,
+    annotations,
+  };
+}
+
+function escapeJsonForScript(value) {
+  return JSON.stringify(value).replace(/</g, '\\u003c');
+}
+
+function renderStaticHtml(payload) {
+  const title = (payload.summary.session && payload.summary.session.title) || payload.sessionId;
+  const dataJson = escapeJsonForScript(payload);
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeepSeek Branch Report - ${title.replace(/[<>&"]/g, '')}</title>
+<style>
+:root { color-scheme: light dark; --bg:#0f1115; --panel:#171a21; --muted:#9aa4b2; --text:#e8edf3; --line:#303645; --accent:#7aa2ff; --ok:#68d391; --warn:#f6ad55; }
+@media (prefers-color-scheme: light) { :root { --bg:#f6f7fb; --panel:#ffffff; --muted:#5c6675; --text:#18202f; --line:#dde3ee; --accent:#2458d3; --ok:#168a45; --warn:#a15c00; } }
+* { box-sizing: border-box; }
+body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
+button, input { font: inherit; }
+.app { display:grid; grid-template-columns: 320px minmax(420px, 1fr) 360px; height:100vh; gap:1px; background:var(--line); }
+.pane { background:var(--panel); overflow:auto; }
+.left, .right { padding:16px; }
+.main { padding:20px; }
+h1, h2, h3 { margin:0 0 10px; }
+h1 { font-size:18px; line-height:1.35; }
+h2 { font-size:14px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; margin-top:22px; }
+.muted { color:var(--muted); }
+.stats { display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin:14px 0; }
+.stat { border:1px solid var(--line); border-radius:10px; padding:10px; }
+.stat strong { display:block; font-size:20px; }
+.list { display:flex; flex-direction:column; gap:8px; }
+.item { width:100%; border:1px solid var(--line); border-radius:10px; padding:10px; background:transparent; color:var(--text); text-align:left; cursor:pointer; }
+.item:hover, .item.selected { border-color:var(--accent); }
+.badge { display:inline-block; border:1px solid var(--line); border-radius:999px; padding:2px 7px; margin:2px 4px 2px 0; color:var(--muted); font-size:12px; }
+.badge.active { color:var(--ok); border-color:var(--ok); }
+.badge.warn { color:var(--warn); border-color:var(--warn); }
+.message { border:1px solid var(--line); border-radius:14px; padding:14px; margin:12px 0; background:rgba(127,127,127,.04); }
+.message.selected { border-color:var(--accent); }
+.role { font-weight:700; }
+.content { white-space:pre-wrap; line-height:1.55; margin-top:10px; }
+.fork { border-left:3px solid var(--accent); margin:12px 0 18px; padding:10px 0 10px 12px; }
+.choices { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+.choice { border:1px solid var(--line); border-radius:999px; padding:6px 10px; background:transparent; color:var(--text); cursor:pointer; }
+.choice.active { border-color:var(--ok); color:var(--ok); }
+.detail { border:1px solid var(--line); border-radius:12px; padding:12px; margin:10px 0; }
+.cmd { width:100%; border:1px solid var(--line); border-radius:10px; padding:10px; background:rgba(127,127,127,.08); color:var(--text); text-align:left; margin:8px 0; word-break:break-all; cursor:pointer; }
+.search { width:100%; border:1px solid var(--line); background:transparent; color:var(--text); padding:10px; border-radius:10px; margin:8px 0 12px; }
+@media (max-width: 1100px) { .app { grid-template-columns:1fr; height:auto; } .pane { min-height:30vh; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="pane left">
+    <h1 id="title"></h1>
+    <div class="muted" id="session-meta"></div>
+    <div class="stats" id="stats"></div>
+    <h2>Tags</h2>
+    <div class="list" id="tags"></div>
+    <h2>Leaves</h2>
+    <input class="search" id="leaf-filter" placeholder="Filter leaf / tag">
+    <div class="list" id="leaves"></div>
+    <h2>Branch Points</h2>
+    <div class="list" id="branch-points"></div>
+  </aside>
+  <main class="pane main">
+    <h1 id="path-title"></h1>
+    <div class="muted" id="path-meta"></div>
+    <div id="path"></div>
+  </main>
+  <aside class="pane right">
+    <h1>Details</h1>
+    <div id="details" class="detail muted">选择一条消息查看详情。</div>
+    <h2>Copy Commands</h2>
+    <div id="commands"></div>
+  </aside>
+</div>
+<script type="application/json" id="branch-data">${dataJson}</script>
+<script>
+(function(){
+  'use strict';
+  var data = JSON.parse(document.getElementById('branch-data').textContent);
+  var tree = data.tree || {};
+  var summary = data.summary || {};
+  var annotations = data.annotations || { tags: {} };
+  var nodes = tree.nodes || {};
+  var selectedLeaf = data.defaultLeafMessageId;
+  var selectedMessage = null;
+  var leafFilter = '';
+
+  function byId(id){ return document.getElementById(id); }
+  function node(id){ return nodes[String(id)] || null; }
+  function make(tag, className, text){
+    var el = document.createElement(tag);
+    if (className) el.className = className;
+    if (text != null) el.textContent = String(text);
+    return el;
+  }
+  function clear(el){ while (el.firstChild) el.removeChild(el.firstChild); }
+  function pathIdsForLeaf(leafId){
+    var ids = [], seen = {}, cur = Number(leafId);
+    while (cur != null && node(cur) && !seen[String(cur)]) {
+      seen[String(cur)] = true;
+      ids.unshift(cur);
+      var n = node(cur);
+      cur = n.parentId == null ? null : n.parentId;
+    }
+    return ids;
+  }
+  function findLeafFrom(startId){
+    var cur = Number(startId);
+    var guard = 0;
+    while (node(cur) && guard < 10000) {
+      var n = node(cur);
+      if (!n.childrenIds || n.childrenIds.length === 0) return cur;
+      var active = n.childrenIds.find(function(cid){ return node(cid) && node(cid).isOnActivePath; });
+      cur = active || n.childrenIds[0];
+      guard += 1;
+    }
+    return Number(startId);
+  }
+  function tagsByLeaf(){
+    var out = {};
+    Object.keys(annotations.tags || {}).forEach(function(name){
+      var tag = annotations.tags[name];
+      var id = String(tag.leafMessageId);
+      if (!out[id]) out[id] = [];
+      out[id].push(name);
+    });
+    return out;
+  }
+  function renderHeader(){
+    var session = summary.session || {};
+    byId('title').textContent = session.title || data.sessionId;
+    byId('session-meta').textContent = 'session ' + data.sessionId + ' · generated ' + data.generatedAt;
+    var stats = summary.stats || {};
+    var box = byId('stats'); clear(box);
+    [['Messages', stats.totalMessages], ['Leaves', stats.leafCount], ['Branches', stats.branchPointCount], ['Active path', stats.activePathLength]].forEach(function(pair){
+      var s = make('div','stat');
+      s.appendChild(make('strong','', pair[1] == null ? '-' : pair[1]));
+      s.appendChild(make('span','muted', pair[0]));
+      box.appendChild(s);
+    });
+  }
+  function renderTags(){
+    var box = byId('tags'); clear(box);
+    var names = Object.keys(annotations.tags || {});
+    if (!names.length) { box.appendChild(make('div','muted','No tags yet.')); return; }
+    names.forEach(function(name){
+      var tag = annotations.tags[name];
+      var btn = make('button','item', name + ' · leaf ' + tag.leafMessageId);
+      btn.onclick = function(){ selectLeaf(tag.leafMessageId); };
+      box.appendChild(btn);
+    });
+  }
+  function renderLeaves(){
+    var box = byId('leaves'); clear(box);
+    var tagMap = tagsByLeaf();
+    (summary.leaves || []).filter(function(leaf){
+      if (!leafFilter) return true;
+      var hay = String(leaf.leafMessageId) + ' ' + (tagMap[String(leaf.leafMessageId)] || []).join(' ');
+      return hay.toLowerCase().indexOf(leafFilter.toLowerCase()) !== -1;
+    }).forEach(function(leaf){
+      var id = String(leaf.leafMessageId);
+      var btn = make('button','item' + (Number(id) === Number(selectedLeaf) ? ' selected' : ''));
+      btn.appendChild(make('div','role','leaf ' + id));
+      btn.appendChild(make('div','muted','path ' + leaf.pathLength + ' · ' + (leaf.lastInsertedAt || '')));
+      if (leaf.isActiveLeaf) btn.appendChild(make('span','badge active','active'));
+      if (leaf.hasIncomplete) btn.appendChild(make('span','badge warn','incomplete'));
+      (tagMap[id] || []).forEach(function(t){ btn.appendChild(make('span','badge', t)); });
+      btn.onclick = function(){ selectLeaf(leaf.leafMessageId); };
+      box.appendChild(btn);
+    });
+  }
+  function renderBranchPoints(){
+    var box = byId('branch-points'); clear(box);
+    (summary.branchPoints || []).forEach(function(bp){
+      var btn = make('button','item');
+      btn.appendChild(make('div','role','msg ' + bp.messageId + ' · ' + bp.childrenCount + ' choices'));
+      btn.appendChild(make('div','muted','depth ' + bp.depth + (bp.activeChildId ? ' · active child ' + bp.activeChildId : '')));
+      btn.onclick = function(){
+        var leaf = bp.activeChildId ? findLeafFrom(bp.activeChildId) : findLeafFrom((bp.children && bp.children[0] && bp.children[0].messageId) || bp.messageId);
+        selectLeaf(leaf);
+        selectMessage(bp.messageId);
+      };
+      box.appendChild(btn);
+    });
+  }
+  function renderFork(n, currentChildId){
+    var div = make('div','fork');
+    div.appendChild(make('div','role','Branch point at msg ' + n.messageId));
+    var choices = make('div','choices');
+    (n.childrenIds || []).forEach(function(cid){
+      var child = node(cid);
+      var b = make('button','choice' + (Number(cid) === Number(currentChildId) ? ' active' : ''), 'child ' + cid + ' · ' + ((child && child.status) || 'UNKNOWN'));
+      b.onclick = function(){ selectLeaf(findLeafFrom(cid)); };
+      choices.appendChild(b);
+    });
+    div.appendChild(choices);
+    return div;
+  }
+  function renderPath(){
+    var path = pathIdsForLeaf(selectedLeaf);
+    var box = byId('path'); clear(box);
+    byId('path-title').textContent = 'Leaf ' + selectedLeaf;
+    byId('path-meta').textContent = path.length + ' messages · redaction ' + detectRedactionMode();
+    for (var i = 0; i < path.length; i += 1) {
+      var n = node(path[i]);
+      if (!n) continue;
+      var card = make('section','message' + (Number(selectedMessage) === Number(n.messageId) ? ' selected' : ''));
+      card.onclick = (function(id){ return function(){ selectMessage(id); }; })(n.messageId);
+      card.appendChild(make('div','role', (n.role || '?') + ' · msg ' + n.messageId + ' · ' + (n.status || 'UNKNOWN')));
+      card.appendChild(make('div','muted', (n.insertedAt || '') + ' · chars ' + (n.contentLength == null ? '-' : n.contentLength)));
+      var content = make('div','content', typeof n.content === 'string' ? n.content : '[content unavailable: ' + (n.contentRedactedMode || 'unknown') + ']');
+      card.appendChild(content);
+      if (n.contentPreviewTruncated) card.appendChild(make('div','badge warn','preview truncated'));
+      box.appendChild(card);
+      if (n.childrenIds && n.childrenIds.length > 1) {
+        box.appendChild(renderFork(n, path[i + 1]));
+      }
+    }
+  }
+  function detectRedactionMode(){
+    var keys = Object.keys(nodes);
+    for (var i = 0; i < keys.length; i += 1) {
+      var mode = nodes[keys[i]].contentRedactedMode;
+      if (mode) return mode;
+    }
+    return 'unknown';
+  }
+  function renderDetails(){
+    var box = byId('details'); clear(box);
+    var n = selectedMessage ? node(selectedMessage) : null;
+    if (!n) { box.appendChild(make('div','muted','选择一条消息查看详情。')); return; }
+    [
+      ['messageId', n.messageId], ['parentId', n.parentId], ['role', n.role],
+      ['status', n.status], ['depth', n.depth], ['sibling', String(n.siblingIndex) + '/' + String(n.siblingCount)],
+      ['contentLength', n.contentLength], ['insertedAt', n.insertedAt]
+    ].forEach(function(pair){
+      var row = make('div','');
+      row.appendChild(make('span','muted', pair[0] + ': '));
+      row.appendChild(make('span','', pair[1] == null ? '-' : pair[1]));
+      box.appendChild(row);
+    });
+  }
+  function commandButton(text){
+    var btn = make('button','cmd', text);
+    btn.onclick = function(){ copyCommand(text); };
+    return btn;
+  }
+  function renderCommands(){
+    var box = byId('commands'); clear(box);
+    box.appendChild(commandButton('node scripts/deepseek-branch-manager.js tag ' + data.sessionId + ' --leaf ' + selectedLeaf + ' --name <name>'));
+    box.appendChild(commandButton('node scripts/deepseek-branch-manager.js export ' + data.sessionId + ' --leaf ' + selectedLeaf + ' --format api-json'));
+    if (selectedMessage) {
+      box.appendChild(commandButton('node scripts/deepseek-branch-manager.js path ' + data.sessionId + ' --leaf ' + selectedLeaf));
+    }
+  }
+  function copyCommand(text){
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(function(){});
+    }
+  }
+  function selectLeaf(leafId){
+    selectedLeaf = Number(leafId);
+    selectedMessage = selectedLeaf;
+    renderLeaves();
+    renderPath();
+    renderDetails();
+    renderCommands();
+  }
+  function selectMessage(messageId){
+    selectedMessage = Number(messageId);
+    renderPath();
+    renderDetails();
+    renderCommands();
+  }
+  byId('leaf-filter').addEventListener('input', function(ev){
+    leafFilter = ev.target.value || '';
+    renderLeaves();
+  });
+  renderHeader();
+  renderTags();
+  renderBranchPoints();
+  selectLeaf(selectedLeaf);
+})();
+</script>
+</body>
+</html>
+`;
+}
+
+function cmdHtml(sessionId, opts) {
+  const payload = buildHtmlReportPayload(sessionId, opts);
+  const body = renderStaticHtml(payload);
+  const outPath = path.resolve(opts.out || path.join(workspace(opts).exportDir(sessionId), 'report.html'));
+  if (fs.existsSync(outPath) && !opts.force) {
+    throw new Error(`output exists; pass --force to overwrite: ${outPath}`);
+  }
+  ensureDir(path.dirname(outPath));
+  fs.writeFileSync(outPath, body, 'utf8');
+  return {
+    ok: true,
+    sessionId,
+    path: outPath,
+    defaultLeafMessageId: payload.defaultLeafMessageId,
+    leaves: (payload.summary.leaves || []).length,
+    branchPoints: (payload.summary.branchPoints || []).length,
+  };
+}
+
 async function main(argv) {
   const parsed = parseArgv(argv);
   const { opts, positional } = parsed;
@@ -563,6 +936,7 @@ async function main(argv) {
   else if (command === 'diff') result = cmdDiff(sessionId, opts);
   else if (command === 'tag') result = cmdTag(sessionId, opts);
   else if (command === 'export') result = cmdExport(sessionId, opts);
+  else if (command === 'html') result = cmdHtml(sessionId, opts);
   else throw new Error(`unknown command: ${command}`);
   printJson(result, opts);
   return 0;
@@ -582,4 +956,6 @@ module.exports = {
   collectLeaves,
   collectBranchPoints,
   pathIdsForLeaf,
+  buildHtmlReportPayload,
+  renderStaticHtml,
 };
