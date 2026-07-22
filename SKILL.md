@@ -1,7 +1,7 @@
 ---
 name: js-deepseek-ops-skill
 description: DeepSeek Chat 全量自动化 skill：READ + INTERACTIVE + DESTRUCTIVE 三档；登录态 / 历史会话 / 单会话历史 / chat 页深度只读 + 创建/重命名/置顶 / 反馈 / 上传 / 分享 / 账号设置 / DOM 模式发/编辑/重生消息（绕开 PoW）。所有 destructive 调用强制写 audit.jsonl，irreversible 调用前自动 backup。**v0.3.3 起不再暴露删除会话工具**（不可逆且无可靠补偿，请走官方 UI）。
-version: 0.4.1
+version: 0.5.0
 metadata:
   openclaw:
     emoji: "\U0001F9E0"
@@ -19,11 +19,14 @@ metadata:
 
 面向 `chat.deepseek.com` 的**全量自动化** skill，对标 [`js-reddit-ops-skill`](../js-reddit-ops-skill/SKILL.md) 的 `PAGE_PROFILES + Bridges + Session` 架构。
 
-**v0.3 BREAKING — 安全姿态反转**：从只读 skill 升级为**完整 ops** skill。
-- v0.2 之前的"明确不做的事"段已废弃；DESTRUCTIVE 工具（发消息 / 删会话 / 改设置 / 上传 / 分享）全部启用
-- 不再做调用前 confirm；改为 **audit 模式**：destructive 调用直接执行，但完整请求体 + 响应强制写入 `~/.js-eyes/skill-records/<skill>/audit/audit.jsonl`
-- `unshare_session` 等真正不可逆操作前自动写 backup 到 `~/.js-eyes/skill-records/<skill>/backups/<resource>-<id>-<ts>.json`（v0.3.3 起删除会话工具已下线）
-- 这是**会改用户真实数据**的 skill；建议测试只在专用 TEST_SID 内做
+当前版本同时支持旧 contract 和 Skill Runtime V2。V2 入口是静态
+`skill.manifest.json` + `skill.entry.js`，外部 skill 可由宿主在隔离 Worker 中加载。
+
+- V2 经 OpenClaw 调用时，`destructive` / `administrative` 工具由宿主执行一次性 consent；只有宿主策略显式放行时才跳过确认
+- CLI 是用户直接执行的本地命令，不经过宿主 consent，写操作会立即生效
+- destructive 审计默认深度脱敏，敏感字符串只保存 `length + sha256`
+- `unshare_session` 执行前必须成功保存分享列表快照；备份失败则拒绝删除
+- v0.3.3 起不再暴露删除会话工具，因为本地快照不能恢复服务端会话
 
 ## 依赖与前置
 
@@ -34,6 +37,19 @@ metadata:
 - **双侧 `allowRawEval`**：bridge 首次注入走 `bot.executeScript(rawSource)`
   - 宿主：`~/.js-eyes/config/config.json` 里 `security.allowRawEval: true`
   - 扩展：js-eyes popup 里 `Allow Raw Eval` 打开
+- 外部 V2 skill 建议使用 `externalSkills.policy: "strict"`、Worker 执行并完成 trust 审批
+- `deepseek_update_user_settings` 默认拒绝所有字段；管理员必须在
+  `skills.js-deepseek-ops-skill.config.allowedUserSettingKeys` 中逐项声明允许键
+
+```json
+{
+  "skills": {
+    "js-deepseek-ops-skill": {
+      "config": { "allowedUserSettingKeys": ["theme"] }
+    }
+  }
+}
+```
 
 ## 安全分级（v0.3）
 
@@ -53,19 +69,25 @@ metadata:
 - 跨域 URL 在 bridge `navigateLocation` 端硬卡 `(?:^|\.)deepseek\.com$`
 - 工具：`deepseek_navigate_home` / `deepseek_navigate_session` / `deepseek_navigate_new_chat`
 
-### DESTRUCTIVE（v0.3 解锁）
+### 写操作（16 DESTRUCTIVE + 1 ADMINISTRATIVE）
 
-会改 DeepSeek 业务数据 / 扣 token / 改账户设置。**调用即生效，无 confirm**。
+会改 DeepSeek 业务数据、消耗 token 或改账户设置。V2 经 OpenClaw 调用时由宿主做
+一次性 consent；CLI 命令由用户直接发起，调用即生效。
 
 | sideEffect | 含义 | 行为 |
 |---|---|---|
-| `reversible` | 可还原（重命名 / 置顶 / 反馈 / 分享 / 上传） | 直接调用；audit 落盘 |
-| `irreversible` | 不可还原（删会话 / 删分享） | 调用前 `prefetchBackup` 写 snapshot 到 backups/；audit 落盘 |
-| `cost` | 消耗 token（发消息 / 编辑 / 重生） | 直接调用；prompt 原文落 audit；返回默认仅 sha256+length（`includeContent=true` 才回正文） |
+| `reversible` | 可还原（重命名 / 置顶 / 反馈 / 分享 / 上传） | 执行后写脱敏 audit |
+| `irreversible` | 不可还原（当前仅删分享） | 先写 snapshot；失败则终止；执行后写脱敏 audit |
+| `cost` | 消耗 token（发消息 / 编辑 / 重生） | prompt 在 audit 中仅保存 length+sha256；业务返回默认也不含正文 |
 
-**审计落盘**：每个 destructive 调用产生一行 `audit.jsonl`，含 `tool / method / sideEffect / args（含 prompt 原文） / result（bridge 完整响应） / backup_path / target_url / bridge`。是 destructive 操作的事后凭证。
+**审计落盘**：每个 destructive 调用产生一行 `audit.jsonl`，包含操作元数据、脱敏后的
+`args/result`、`backup_path`、目标与 bridge 信息。目录权限为 `0700`，文件为 `0600`。
+`history` 只记录参数 sha256，不再把参数编码进 URL。
+本地 export、树形输出和 branch-manager 工作区文件在 POSIX 上也会写成 `0600`；
+branch-manager 的 scan 默认 `redact=off`，需要正文时必须显式指定 `--redact full`。
 
-**Backup 文件**：`backups/session-<sid>-<ISO ts>.json`，包含会话标题 / 消息元数据 / 每条 sha256+length（不含正文）。
+**Backup 文件**：当前 `unshare_session` 写入 `backups/share-<id>-<ISO ts>.json`，保存
+删除前的分享列表快照（敏感字段同样脱敏）。它用于审计和人工核对，不保证能恢复服务端分享。
 
 ## 工具清单（共 33 个）
 
@@ -95,7 +117,7 @@ metadata:
 | `deepseek_navigate_session` | 导航到 /a/chat/s/\<id\> |
 | `deepseek_navigate_new_chat` | 导航到 / 起新对话（不创建 sessionId） |
 
-### DESTRUCTIVE（14 个）
+### DESTRUCTIVE / ADMINISTRATIVE（17 个）
 
 | 工具 | sideEffect | 说明 |
 |---|---|---|
@@ -114,7 +136,7 @@ metadata:
 | `deepseek_upload_file` | reversible | 上传文件（base64） |
 | `deepseek_share_session` | reversible | 创建分享链接 |
 | `deepseek_unshare_session` | irreversible | 删分享链接 |
-| `deepseek_update_user_settings` | reversible | 更新账号设置 |
+| `deepseek_update_user_settings` | reversible / administrative | 仅更新管理员 allowlist 中的账号设置键；默认全部拒绝 |
 
 ## 已知限制
 
@@ -187,12 +209,16 @@ node index.js xhr-log --filter "/api/v0/" --limit 200
 ## 架构
 
 ```
-┌─ skill.contract.js ─ TOOL_DEFINITIONS（24 个，含 destructive/sideEffect 字段）
+┌─ skill.manifest.json ─ V2 静态描述（风险、schema、最小能力）
+├─ skill.entry.js ─────── V2 Worker 入口（33 个 handler）
+├─ skill.contract.js ──── TOOL_DEFINITIONS 单一业务定义（33 个）
 │
 ├─ lib/
-│   ├─ runTool.js          ← READ + DESTRUCTIVE 双分支（destructive 强制 audit + 可选 backup）
-│   ├─ audit.js (新)        ← writeAuditEntry / writeBackup
+│   ├─ runTool.js          ← READ + 写操作双分支（audit + irreversible 强制 backup）
+│   ├─ audit.js            ← 默认脱敏、0600 的 audit / backup
 │   ├─ redact.js            ← redact policy（off/trunc/full + sha256 摘要）
+│   ├─ settingsPolicy.js    ← 账号设置字段 allowlist（默认拒绝）
+│   ├─ toolSchema.js        ← V1/V2 共用的闭合输入 schema
 │   ├─ session.js           ← bridge 注入 / callApi / callRaw / awaitBridgeAfterNav
 │   ├─ commands.js          ← CLI 命令注册（含 destructive kind）
 │   └─ ...
@@ -210,16 +236,18 @@ node index.js xhr-log --filter "/api/v0/" --limit 200
 ```
 LLM tool call
   ↓
-skill.contract.js (TOOL_DEFINITIONS, destructive=true, sideEffect=...)
+V2 host risk gate（destructive / administrative 一次性 consent）
   ↓
-lib/runTool.js destructive 分支
-  ↓ (如果 sideEffect=irreversible) prefetchBackup → lib/audit.writeBackup
+skill.entry.js → skill.contract.js (destructive=true, sideEffect=...)
+  ↓
+lib/runTool.js 写操作分支
+  ↓ (如果 sideEffect=irreversible) prefetchBackup → writeBackup；失败即终止
   ↓
 session.callApi(method) → bridge POST /api/v0/...
   ↓
 bridge response
-  ↓ (跳过 transformResult 的 redact)
-lib/audit.writeAuditEntry  ← 完整 args + result + backup_path 落 audit.jsonl
+  ↓
+lib/audit.writeAuditEntry  ← 脱敏 args/result + backup_path 落 audit.jsonl（0600）
   ↓
 返回给 LLM
 ```

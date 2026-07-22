@@ -16,6 +16,8 @@ const {
   buildListBranchPointsTransform,
 } = require('./lib/redact');
 const { ensureSkillRecordsReadme } = require('./lib/skillRecordsReadme');
+const { assertAllowedUserSettings, resolveAllowedUserSettingKeys } = require('./lib/settingsPolicy');
+const { hardenToolSchema } = require('./lib/toolSchema');
 
 const CLI_COMMANDS = [
   { name: 'doctor', description: '连通性 + 登录态 + bridge 注入 + probe + state 汇总' },
@@ -63,12 +65,14 @@ function makeLogger(logger) {
 }
 
 function createRuntime(config = {}, logger) {
-  ensureSkillRecordsReadme();
+  ensureSkillRecordsReadme(config.skillDataRoot);
   const resolvedConfig = resolveRuntimeConfig(config);
   const runtimeConfig = {
     serverUrl: resolvedConfig.serverUrl,
     recording: resolvedConfig.recording,
     pages: Object.keys(PAGE_PROFILES),
+    allowedUserSettingKeys: resolveAllowedUserSettingKeys(config),
+    skillDataRoot: config.skillDataRoot || null,
   };
   const resolvedLogger = makeLogger(logger);
   let bot = null;
@@ -136,6 +140,20 @@ function makeDestructiveExecutor({ pageKey, method, toolName, sideEffect, buildT
           : 60000,
       },
     });
+  };
+}
+
+async function prefetchShareBackup(session, args = {}) {
+  const snapshot = await session.callApi('listShares', [{ count: 100 }], { timeoutMs: 30000 });
+  if (!snapshot?.ok) {
+    const error = new Error(`Unable to list shares before deletion: ${snapshot?.error || 'unknown error'}`);
+    error.code = 'E_BACKUP_SOURCE_UNAVAILABLE';
+    throw error;
+  }
+  return {
+    resource: 'share',
+    id: args.shareId,
+    snapshot: { shareId: args.shareId, shares: snapshot.data?.shares || snapshot.data || null },
   };
 }
 
@@ -226,7 +244,7 @@ const TOOL_DEFINITIONS = [
     pageKey: 'chat', method: 'getSession',
     execute(runtime, params, context = {}) {
       const p = params || {};
-      const transform = buildGetSessionTransform({ mode: p.redact || 'full', truncLen: p.truncLen });
+      const transform = buildGetSessionTransform({ mode: p.redact || 'off', truncLen: p.truncLen });
       const targetUrl = p.sessionId ? targets.chatSessionUrl({ sessionId: p.sessionId }) : null;
       return runTool(runtime.ensureBot(), {
         toolName: 'deepseek_get_session', pageKey: 'chat', method: 'getSession',
@@ -293,7 +311,7 @@ const TOOL_DEFINITIONS = [
     pageKey: 'chat', method: 'getMessage',
     execute(runtime, params, context = {}) {
       const p = params || {};
-      const transform = buildGetMessageTransform({ mode: p.redact || 'full', truncLen: p.truncLen });
+      const transform = buildGetMessageTransform({ mode: p.redact || 'off', truncLen: p.truncLen });
       const targetUrl = p.sessionId ? targets.chatSessionUrl({ sessionId: p.sessionId }) : null;
       return runTool(runtime.ensureBot(), {
         toolName: 'deepseek_get_message', pageKey: 'chat', method: 'getMessage',
@@ -326,7 +344,7 @@ const TOOL_DEFINITIONS = [
     pageKey: 'chat', method: 'getSessionTree',
     execute(runtime, params, context = {}) {
       const p = params || {};
-      const transform = buildGetSessionTreeTransform({ mode: p.redact || 'full', truncLen: p.truncLen });
+      const transform = buildGetSessionTreeTransform({ mode: p.redact || 'off', truncLen: p.truncLen });
       const targetUrl = p.sessionId ? targets.chatSessionUrl({ sessionId: p.sessionId }) : null;
       return runTool(runtime.ensureBot(), {
         toolName: 'deepseek_get_session_tree', pageKey: 'chat', method: 'getSessionTree',
@@ -387,7 +405,7 @@ const TOOL_DEFINITIONS = [
     pageKey: 'chat', method: 'getBranchPath',
     execute(runtime, params, context = {}) {
       const p = params || {};
-      const transform = buildGetBranchPathTransform({ mode: p.redact || 'full', truncLen: p.truncLen });
+      const transform = buildGetBranchPathTransform({ mode: p.redact || 'off', truncLen: p.truncLen });
       const targetUrl = p.sessionId ? targets.chatSessionUrl({ sessionId: p.sessionId }) : null;
       return runTool(runtime.ensureBot(), {
         toolName: 'deepseek_get_branch_path', pageKey: 'chat', method: 'getBranchPath',
@@ -725,7 +743,10 @@ const TOOL_DEFINITIONS = [
     parameters: { type: 'object', properties: { shareId: { type: 'string' } }, required: ['shareId'] },
     optional: true, interactive: false, destructive: true, sideEffect: 'irreversible',
     pageKey: 'home', method: 'unshareSession',
-    execute: makeDestructiveExecutor({ toolName: 'deepseek_unshare_session', pageKey: 'home', method: 'unshareSession', sideEffect: 'irreversible', buildTargetUrl: () => null }),
+    execute: makeDestructiveExecutor({
+      toolName: 'deepseek_unshare_session', pageKey: 'home', method: 'unshareSession',
+      sideEffect: 'irreversible', buildTargetUrl: () => null, prefetchBackup: prefetchShareBackup,
+    }),
   },
   {
     name: 'deepseek_update_user_settings',
@@ -734,7 +755,13 @@ const TOOL_DEFINITIONS = [
     parameters: { type: 'object', properties: { settings: { type: 'object' } }, required: ['settings'] },
     optional: true, interactive: false, destructive: true, sideEffect: 'reversible',
     pageKey: 'home', method: 'updateUserSettings',
-    execute: makeDestructiveExecutor({ toolName: 'deepseek_update_user_settings', pageKey: 'home', method: 'updateUserSettings', sideEffect: 'reversible', buildTargetUrl: () => null }),
+    async execute(runtime, params, context = {}) {
+      assertAllowedUserSettings(params?.settings, runtime.config);
+      return makeDestructiveExecutor({
+        toolName: 'deepseek_update_user_settings', pageKey: 'home', method: 'updateUserSettings',
+        sideEffect: 'reversible', buildTargetUrl: () => null,
+      })(runtime, params, context);
+    },
   },
 ];
 
@@ -743,7 +770,7 @@ function projectTool(tool) {
     name: tool.name,
     label: tool.label,
     description: tool.description,
-    parameters: tool.parameters,
+    parameters: hardenToolSchema(tool.name, tool.parameters),
     optional: tool.optional === true,
     interactive: tool.interactive === true,
     destructive: tool.destructive === true,
@@ -779,4 +806,7 @@ module.exports = {
   openclaw: { tools: TOOL_DEFINITIONS.map(projectTool) },
   createRuntime,
   createOpenClawAdapter,
+  projectTool,
+  prefetchShareBackup,
+  TOOL_DEFINITIONS,
 };

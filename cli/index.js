@@ -16,7 +16,16 @@ const {
 } = require('../lib/redact');
 const { formatAsMermaid, formatAsAscii } = require('../lib/treeFormat');
 const { ensureSkillRecordsReadme } = require('../lib/skillRecordsReadme');
+const { assertAllowedUserSettings } = require('../lib/settingsPolicy');
+const { prefetchShareBackup } = require('../skill.contract');
 const fs = require('fs');
+
+function writePrivateFile(filePath, contents) {
+  fs.writeFileSync(filePath, contents, { encoding: 'utf8', mode: 0o600 });
+  if (process.platform !== 'win32') {
+    try { fs.chmodSync(filePath, 0o600); } catch {}
+  }
+}
 
 function pickPage(commandName, opts) {
   if (opts.page) return opts.page;
@@ -86,14 +95,17 @@ async function runDestructiveCommand(commandName, def, opts, positional) {
   let prefetchBackup = null;
   if (def.prefetchBackup === true) {
     prefetchBackup = async function (session, a) {
-      try {
-        const snap = await session.callApi('getSessionSnapshot', [{ sessionId: a.sessionId }], { timeoutMs: 30000 });
-        if (snap && snap.ok && snap.data) return { resource: 'session', id: a.sessionId, snapshot: snap.data };
-        return { resource: 'session', id: a.sessionId, snapshot: { unavailable: true, error: snap && snap.error } };
-      } catch (e) {
-        return { resource: 'session', id: a.sessionId, snapshot: { unavailable: true, message: String(e && e.message) } };
-      }
+      const snap = await session.callApi('getSessionSnapshot', [{ sessionId: a.sessionId }], { timeoutMs: 30000 });
+      if (snap && snap.ok && snap.data) return { resource: 'session', id: a.sessionId, snapshot: snap.data };
+      const error = new Error(`Unable to snapshot session before deletion: ${snap?.error || 'unknown error'}`);
+      error.code = 'E_BACKUP_SOURCE_UNAVAILABLE';
+      throw error;
     };
+  } else if (def.prefetchBackup === 'share') {
+    prefetchBackup = prefetchShareBackup;
+  }
+  if (def.toolName === 'deepseek_update_user_settings') {
+    assertAllowedUserSettings(argsObj.settings, runtimeConfig.globalConfig);
   }
   try {
     const response = await runTool(browser, {
@@ -165,7 +177,7 @@ async function runExportSessionLocal(opts, positional) {
   } else {
     body = JSON.stringify(data, null, 2);
   }
-  fs.writeFileSync(path.resolve(outPath), body, 'utf8');
+  writePrivateFile(path.resolve(outPath), body);
   printJson({ ok: true, exported: true, path: path.resolve(outPath), format, messages: (data.messages || []).length }, opts);
   return 0;
 }
@@ -187,21 +199,21 @@ async function runToolCommand(commandName, def, opts, positional) {
   // 含正文的工具走 redact transform；list-messages 走防漏断言 transform
   let transformResult = undefined;
   if (commandName === 'get-session') {
-    const mode = opts.redact || 'full';
+    const mode = opts.redact || 'off';
     const truncLen = opts.truncLen ? Number(opts.truncLen) : undefined;
     transformResult = buildGetSessionTransform({ mode, truncLen });
   } else if (commandName === 'get-message') {
-    const mode = opts.redact || 'full';
+    const mode = opts.redact || 'off';
     const truncLen = opts.truncLen ? Number(opts.truncLen) : undefined;
     transformResult = buildGetMessageTransform({ mode, truncLen });
   } else if (commandName === 'list-messages') {
     transformResult = buildListMessagesTransform();
   } else if (commandName === 'get-session-tree') {
-    const mode = opts.redact || 'full';
+    const mode = opts.redact || 'off';
     const truncLen = opts.truncLen ? Number(opts.truncLen) : undefined;
     transformResult = buildGetSessionTreeTransform({ mode, truncLen });
   } else if (commandName === 'get-branch-path') {
-    const mode = opts.redact || 'full';
+    const mode = opts.redact || 'off';
     const truncLen = opts.truncLen ? Number(opts.truncLen) : undefined;
     transformResult = buildGetBranchPathTransform({ mode, truncLen });
   } else if (commandName === 'list-branch-points') {
@@ -236,7 +248,7 @@ async function runToolCommand(commandName, def, opts, positional) {
       if (tree) {
         const text = opts.format === 'mermaid' ? formatAsMermaid(tree) : formatAsAscii(tree);
         if (opts.out) {
-          fs.writeFileSync(opts.out, text, 'utf8');
+          writePrivateFile(opts.out, text);
           process.stderr.write(`tree written to ${opts.out}\n`);
         } else {
           process.stdout.write(text);

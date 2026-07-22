@@ -7,11 +7,14 @@
 `js-deepseek-ops-skill` 默认走严格隐私设置：
 
 - `history/`：按月滚动的 `tool_calls.jsonl`，**只记 metadata**（工具名 / 时间戳 / duration / runId / cache_key），**不含正文**
+- `audit/`：写操作审计；prompt、正文、token、cookie、请求 body 等敏感字符串仅保存 `length + sha256`
+- `backups/`：不可逆操作前的脱敏快照；快照写入失败时操作不会执行
 - `debug/`：仅在 `--debug-recording` 模式下生成；包含步骤时间线 / target meta / bridge meta / **result 快照**
   - 即便 debug 模式开启，`deepseek_get_session` 的 `messages[].content` / `thinkingContent` 默认仍被 redact 成 `{length, sha256}` 摘要
   - 只有同时传 `--redact full --debug-recording` 才会落正文
 
-但如果你显式传 `--redact full --debug-recording`，**这个目录会包含原文 DeepSeek 私聊**。
+但如果你显式传 `--redact full --debug-recording`，**debug 目录会包含原文 DeepSeek 私聊**。
+POSIX 上根目录/子目录会收紧为 `0700`，记录文件会收紧为 `0600`。
 
 ## 建议
 
@@ -37,6 +40,10 @@
 ├── README.md                         <- 本文件
 ├── history/
 │   └── tool_calls-2026-04.jsonl      <- metadata only
+├── audit/
+│   └── audit.jsonl                   <- 默认脱敏的写操作审计
+├── backups/
+│   └── share-<id>-<timestamp>.json   <- 不可逆操作前的脱敏快照
 └── debug/
     └── <runId>/
         ├── meta.json

@@ -1,12 +1,14 @@
 {
   "name": "js-deepseek-ops-skill",
-  "version": "0.4.1",
-  "description": "DeepSeek Chat 全量自动化技能：READ + INTERACTIVE + DESTRUCTIVE 三档（v0.4.1：buildSessionTree 抽到 lib/sessionTree.js + node:test 单测 + mermaid/ascii 树形可视化）",
+  "version": "0.5.0",
+  "description": "DeepSeek Chat 自动化技能：33 个工具、Skill Runtime V2 清单、最小能力声明、默认脱敏审计与不可逆操作备份",
   "private": true,
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "test": "node --test 'tests/**/*.test.js'",
+    "manifest": "node scripts/generate-manifest.js",
+    "manifest:check": "node scripts/generate-manifest.js --check",
     "doctor": "node index.js doctor",
     "probe": "node index.js probe",
     "state": "node index.js state",
@@ -47,12 +49,13 @@
     "dom-dump": "node index.js dom-dump",
     "xhr-log": "node index.js xhr-log"
   },
-  "engines": { "node": ">=18.0.0" },
-  "jsEyes": { "minParentVersion": "2.6.1" },
+  "engines": { "node": ">=22.0.0" },
+  "jsEyes": { "minParentVersion": "2.8.5" },
   "dependencies": {
-    "@js-eyes/config": "^2.0.0",
-    "@js-eyes/skill-recording": "^2.0.0",
-    "@js-eyes/runtime-paths": "^2.0.0",
-    "ws": "^8.18.0"
+    "@js-eyes/client-sdk": "^2.8.5",
+    "@js-eyes/config": "^2.8.5",
+    "@js-eyes/skill-recording": "^2.8.5",
+    "@js-eyes/runtime-paths": "^2.8.5",
+    "ws": "^8.21.0"
   }
 }

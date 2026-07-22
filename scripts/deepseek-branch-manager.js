@@ -27,7 +27,7 @@ function usage() {
     '',
     'Options:',
     '  --workdir <path>         Local branch workspace (default: .deepseek-branches)',
-    '  --redact trunc|full|off  scan content mode (default: full)',
+    '  --redact trunc|full|off  scan content mode (default: off)',
     '  --trunc-len <n>          truncation length for scan',
     '  --content-max-len <n>    bridge hard content limit for scan',
     '  --from <messageId>       export a suffix of the selected path',
@@ -41,7 +41,7 @@ function usage() {
 function parseArgv(argv) {
   const opts = {
     workdir: DEFAULT_WORKDIR,
-    redact: 'full',
+    redact: 'off',
     truncLen: null,
     contentMaxLen: null,
     pretty: false,
@@ -108,7 +108,14 @@ function printJson(value, opts) {
 }
 
 function ensureDir(dir) {
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+}
+
+function writePrivateFile(file, contents) {
+  fs.writeFileSync(file, contents, { encoding: 'utf8', mode: 0o600 });
+  if (process.platform !== 'win32') {
+    try { fs.chmodSync(file, 0o600); } catch {}
+  }
 }
 
 function readJson(file) {
@@ -117,7 +124,7 @@ function readJson(file) {
 
 function writeJson(file, value) {
   ensureDir(path.dirname(file));
-  fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n', 'utf8');
+  writePrivateFile(file, JSON.stringify(value, null, 2) + '\n');
 }
 
 function workspace(opts) {
@@ -322,7 +329,7 @@ async function cmdScan(sessionId, opts) {
   const indexDir = ws.indexDir(sessionId);
   ensureDir(indexDir);
   const tmpFile = path.join(indexDir, 'tree.raw.json');
-  const args = ['get-session-tree', sessionId, '--redact', opts.redact || 'full', '--pretty'];
+  const args = ['get-session-tree', sessionId, '--redact', opts.redact || 'off', '--pretty'];
   if (opts.truncLen) args.push('--trunc-len', String(opts.truncLen));
   if (opts.contentMaxLen) args.push('--content-max-len', String(opts.contentMaxLen));
 
@@ -542,7 +549,7 @@ function cmdExport(sessionId, opts) {
     throw new Error(`output exists; pass --force to overwrite: ${outPath}`);
   }
   ensureDir(path.dirname(outPath));
-  fs.writeFileSync(outPath, body, 'utf8');
+  writePrivateFile(outPath, body);
   return {
     ok: true,
     sessionId,
@@ -1252,7 +1259,7 @@ function cmdIndexHtml(opts) {
     throw new Error(`output exists; pass --force to overwrite: ${outPath}`);
   }
   ensureDir(path.dirname(outPath));
-  fs.writeFileSync(outPath, body, 'utf8');
+  writePrivateFile(outPath, body);
   return {
     ok: true,
     path: outPath,
@@ -1269,7 +1276,7 @@ function cmdHtml(sessionId, opts) {
     throw new Error(`output exists; pass --force to overwrite: ${outPath}`);
   }
   ensureDir(path.dirname(outPath));
-  fs.writeFileSync(outPath, body, 'utf8');
+  writePrivateFile(outPath, body);
   return {
     ok: true,
     sessionId,
@@ -1318,6 +1325,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  parseArgv,
   buildSummary,
   collectLeaves,
   collectBranchPoints,

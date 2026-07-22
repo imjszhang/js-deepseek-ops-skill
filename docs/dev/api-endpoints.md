@@ -47,7 +47,7 @@
 | DESTRUCTIVE,reversible | `/api/v0/chat/stop_stream` | POST | 停止当前流 | `stop_stream` |
 | DESTRUCTIVE,reversible | `/api/v0/share/create` | POST `{chat_session_id, title?, message_ids?}` | 创建分享 | `share_session` |
 | DESTRUCTIVE,reversible | `/api/v0/file/upload_file` | POST multipart | 上传文件 | `upload_file` |
-| DESTRUCTIVE,reversible | `/api/v0/users/update_settings` | POST `{...}` | 更新账号设置 | `update_user_settings` |
+| ADMINISTRATIVE,reversible | `/api/v0/users/update_settings` | POST `{...}` | 更新账号设置；仅允许管理员配置的字段 | `update_user_settings` |
 | DESTRUCTIVE,irreversible | `/api/v0/chat_session/delete` | POST `{chat_session_id}` | 删除会话 | （**v0.3.3 起永不实现**：不可逆且 backup 无法恢复服务端真实数据） |
 | DESTRUCTIVE,irreversible | `/api/v0/chat_session/delete_all` | POST | 删除所有会话 | （**永不实现**） |
 | DESTRUCTIVE,irreversible | `/api/v0/share/delete` | POST `{share_id}` | 删除分享 | `unshare_session` |

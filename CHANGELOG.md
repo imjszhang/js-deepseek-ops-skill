@@ -2,6 +2,24 @@
 
 本仓库的版本历史与根因索引。SKILL.md 只保留前向规划，所有"已发生"的变更与事故复盘都迁到这里。
 
+## v0.5.0 — Skill Runtime V2 与安全收敛（2026-07-22）
+
+- 新增静态 `skill.manifest.json`、`skill.entry.js` 与生成/漂移检查脚本；33 个工具可由
+  JS Eyes >=2.8.5 作为外部 V2 skill 在 Worker 中加载。
+- 为每个工具声明风险、闭合输入 schema 与最小能力；账号设置工具标为
+  `administrative`，并增加默认拒绝的字段 allowlist。
+- 复用 `@js-eyes/client-sdk`，删除仓库内 457 行旧客户端副本；升级 Node 下限至 22。
+- audit/backup 默认深度脱敏，POSIX 目录/文件权限收紧至 `0700/0600`；history 不再
+  把完整参数编码进伪 URL。
+- V2 history/debug/audit/backup 统一写入宿主分配的 scoped skill storage，不再依赖
+  Worker 的用户主目录；每次新建 history/debug 后再次强制私有权限。
+- CLI export、树形输出和 branch-manager 工作区文件统一使用 `0600`；branch-manager
+  scan 默认从 `full` 改为 `off`。
+- `unshare_session` 补齐分享列表快照，任何不可逆工具在快照读取或落盘失败时都拒绝执行。
+- 新增 V2 manifest、脱敏、权限、设置 allowlist、schema、共享 SDK 与 backup 单测。
+
+> 本节的安全语义取代下方 v0.3 历史条目中“无 confirm / audit 保存完整原文”的旧设计。
+
 ## v0.4.1 — 测试基础设施 + 树形可视化（2026-05-07）
 
 v0.4.0 的内部巩固版本：把 `buildSessionTree` 抽到独立的 `lib/sessionTree.js`，引入
