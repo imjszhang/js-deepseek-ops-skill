@@ -33,8 +33,8 @@
 | 类别 | 端点 | 方法 | 用途 | 本 skill 工具 |
 |---|---|---|---|---|
 | **READ** | `/api/v0/users/current` | GET | 登录态 / 账户基本信息 | `session_state` |
-| READ | `/api/v0/chat_session/fetch_page` | GET | 历史会话列表（分页） | `list_sessions` |
-| READ | `/api/v0/chat/history_messages` | GET | 单会话**全分支**消息（含 active path 与所有兄弟分支） | `get_session` / `list_messages` / `get_message` / `streaming_status` / `get_session_tree` / `list_branch_points` / `get_branch_path` |
+| READ | `/api/v0/chat_session/fetch_page` | GET | 历史会话列表（分页） | `list_sessions` / `sync_sessions` |
+| READ | `/api/v0/chat/history_messages` | GET | 单会话**全分支**消息（含 active path 与所有兄弟分支） | `get_session` / `list_messages` / `get_message` / `streaming_status` / `get_session_tree` / `list_branch_points` / `get_branch_path` / `sync_session` |
 | READ | `/api/v0/client/settings` | GET | model 列表 / feature flag | `chat_settings_view` |
 | READ | `/api/v0/file/fetch_files` | GET | 当前账号上传的文件 | `list_files` |
 | READ | `/api/v0/share/list` | GET (`?count=N`) | 分享列表 | `list_shares` |
@@ -96,9 +96,11 @@
 - active path（UI 上当前可见的对话流）= 从 `current_message_id` 沿 `parent_id` 反推到 root
 - 服务端不返 children 反向索引，需要客户端构建（见 `bridges/chat-bridge.js::buildSessionTree`）
 
-**可选 query 参数**（v0.4.0 bridge 当前未传，留作未来增量同步优化）：
-- `cache_version`：与 `session.version` / `current_message_id` 一致；客户端缓存有效性校验
-- `cache_reset_at`：unix 秒级时间戳；缓存失效锚点
+**可选 query 参数**（`bridges/common.js::fetchHistoryMessagesRaw` 在同步路径会传；普通 `get_session` 仍不传）：
+- `cache_version`：与本地已同步的 `session.version` 对齐；未验证合同时空 `chat_messages` **不**解释成未变更
+- `cache_reset_at`：unix 秒级缓存失效锚点；与本地不同则按 reset 丢幽灵 messageId
+
+L1 解释器只承认 HTTP `304` 或 `biz_data.not_modified` / `cache_valid`。其它形状 fallback 全量。踊点清单见 [`cache-version-scout.md`](./cache-version-scout.md)。
 
 ### `/api/v0/chat_session/create` (POST)
 

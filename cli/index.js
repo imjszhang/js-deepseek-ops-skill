@@ -18,6 +18,7 @@ const { formatAsMermaid, formatAsAscii } = require('../lib/treeFormat');
 const { ensureSkillRecordsReadme } = require('../lib/skillRecordsReadme');
 const { assertAllowedUserSettings } = require('../lib/settingsPolicy');
 const { prefetchShareBackup } = require('../skill.definition');
+const { runSyncSessions, runSyncSession } = require('../lib/sync/runSync');
 const fs = require('fs');
 
 function writePrivateFile(filePath, contents) {
@@ -129,6 +130,75 @@ async function runDestructiveCommand(commandName, def, opts, positional) {
         reuseAnyDeepseekTab: true,
         createUrl: targetUrl || 'https://chat.deepseek.com/',
         timeoutMs: ['sendMessage', 'editMessage', 'regenerateMessage', 'domSendMessage', 'domEditMessage', 'domRegenerateMessage'].includes(def.api) ? 180000 : 60000,
+      },
+    });
+    printJson(response, opts);
+    return response && response.ok === false ? 1 : 0;
+  } finally {
+    try { browser.disconnect(); } catch (_) {}
+  }
+}
+
+async function runSyncSessionsCommand(opts) {
+  const runtimeConfig = resolveRuntimeConfig({
+    browserServer: opts.wsEndpoint || process.env.JS_EYES_WS_URL,
+    recording: {
+      ...(opts.recordingMode ? { mode: opts.recordingMode } : {}),
+      ...(opts.recordingBaseDir ? { baseDir: opts.recordingBaseDir } : {}),
+    },
+  });
+  const browser = new BrowserAutomation(runtimeConfig.serverUrl, opts.verbose ? {} : {
+    logger: { info: () => {}, warn: (...a) => console.error(...a), error: (...a) => console.error(...a) },
+  });
+  try {
+    const response = await runSyncSessions({
+      bot: browser,
+      recording: runtimeConfig.recording,
+      wsEndpoint: runtimeConfig.serverUrl,
+      verbose: opts.verbose,
+      tab: opts.tab,
+      runId: opts.runId,
+      debugRecording: opts.debugRecording,
+      recordingMode: opts.recordingMode,
+      args: {
+        limit: opts.limit ? Number(opts.limit) : undefined,
+        full: !!opts.full,
+        beforeSeqId: opts.before || undefined,
+      },
+    });
+    printJson(response, opts);
+    return response && response.ok === false ? 1 : 0;
+  } finally {
+    try { browser.disconnect(); } catch (_) {}
+  }
+}
+
+async function runSyncSessionCommand(opts, positional) {
+  validateRequiredArgs(COMMANDS['sync-session'], positional);
+  const runtimeConfig = resolveRuntimeConfig({
+    browserServer: opts.wsEndpoint || process.env.JS_EYES_WS_URL,
+    recording: {
+      ...(opts.recordingMode ? { mode: opts.recordingMode } : {}),
+      ...(opts.recordingBaseDir ? { baseDir: opts.recordingBaseDir } : {}),
+    },
+  });
+  const browser = new BrowserAutomation(runtimeConfig.serverUrl, opts.verbose ? {} : {
+    logger: { info: () => {}, warn: (...a) => console.error(...a), error: (...a) => console.error(...a) },
+  });
+  try {
+    const response = await runSyncSession({
+      bot: browser,
+      recording: runtimeConfig.recording,
+      wsEndpoint: runtimeConfig.serverUrl,
+      verbose: opts.verbose,
+      tab: opts.tab,
+      runId: opts.runId,
+      debugRecording: opts.debugRecording,
+      recordingMode: opts.recordingMode,
+      args: {
+        sessionId: positional[0],
+        force: !!opts.force,
+        storeTree: !!opts.storeTree,
       },
     });
     printJson(response, opts);
@@ -533,6 +603,8 @@ async function main(argv) {
   if (command === 'dom-dump') return runDomDump(opts);
   if (command === 'xhr-log') return runXhrLog(opts);
   if (command === 'export-session-local') return runExportSessionLocal(opts, positional);
+  if (command === 'sync-sessions') return runSyncSessionsCommand(opts);
+  if (command === 'sync-session') return runSyncSessionCommand(opts, positional);
   if (def.kind === 'call') return runCallCommand(command, def, opts, positional);
   if (def.kind === 'tool') return runToolCommand(command, def, opts, positional);
   if (def.kind === 'destructive') return runDestructiveCommand(command, def, opts, positional);
@@ -558,5 +630,7 @@ module.exports = {
   runDestructiveCommand,
   runNavigateCommand,
   runExportSessionLocal,
+  runSyncSessionsCommand,
+  runSyncSessionCommand,
   printHelp,
 };

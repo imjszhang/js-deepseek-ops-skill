@@ -66,6 +66,14 @@ test('@@include ../lib/sessionTree.js 能从 bridges/ 解析到 lib/', () => {
   assert.ok(out.includes('function _emptyTreeStats'));
 });
 
+test('home-bridge 展开后含共享 history 拉取与 getSessionForSync', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'bridges', 'home-bridge.js'), 'utf8');
+  const out = expandBridgeSource(src);
+  assert.ok(out.includes('function fetchHistoryMessagesRaw'));
+  assert.ok(out.includes('async function getSessionForSync'));
+  assert.ok(!/^[ \t]*\/\/\s*@@include\s+/m.test(out));
+});
+
 test('chat-bridge 先嵌入 composerOptions 再嵌入 common', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'bridges', 'chat-bridge.js'), 'utf8');
   const out = expandBridgeSource(src);

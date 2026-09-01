@@ -2,6 +2,32 @@
 
 本仓库的版本历史与根因索引。SKILL.md 只保留前向规划，所有"已发生"的变更与事故复盘都迁到这里。
 
+## v0.8.0 — 历史会话增量同步（2026-09-01）
+
+本地水位索引 + 按脏会话拉历史。权威数据仍在 DeepSeek；`get_session` 默认行为不变。
+
+### 新增
+
+- READ `deepseek_sync_sessions` / CLI `sync-sessions [--full]`：翻 `fetch_page`，写 `{skillDir}/sync/index.json`
+- READ `deepseek_sync_session` / CLI `sync-session [--force] [--store-tree]`：version 短路或合并 `meta.json`
+- `lib/sync/`：store / diffSessions / mergeMessages / interpretHistory / runSync
+- ADR-002、`docs/dev/cache-version-scout.md`（L1 合同未填完前空数组不当 not-modified）
+
+### 行为
+
+- 存储不走框架 cache（`noCache: true` 仍在）。目录 `0700`、文件 `0600`。title 落盘只存 length+sha256
+- 两级 version：`listVersion`（列表）与 `syncedVersion`（已拉历史），避免 list 同步后误跳过
+- STREAMING/WIP/PENDING 标 `pending`，不抬 syncedVersion
+- L1 只认 HTTP 304 / `biz.not_modified` / `cache_valid`；`cache_reset_at` 变化按 reset 删幽灵 id
+- `--store-tree` 才写 `tree.json`；工具返回永不带正文
+- home-bridge `0.3.6` → `0.3.7`（`getSessionForSync`）；chat-bridge `0.3.17` → `0.3.18`（`fetchHistoryMessagesRaw` 抽到 common.js）
+
+### 不做的事
+
+- 不改 `get_session` / `get_session_tree` 读本地
+- 不实现 delete_session
+- 不把空 `chat_messages` 猜成 not-modified（等踊点合同）
+
 ## v0.7.0 — 新对话 composer chrome（2026-09-01）
 
 - `chat_page_state` 增加只读 `chrome`：`modelType` / `modelLabel` / `thinkingEnabled` / `searchEnabled` / `attachVisible` / 精简 `models`。

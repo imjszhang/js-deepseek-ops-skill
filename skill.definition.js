@@ -17,6 +17,7 @@ const {
   buildListBranchPointsTransform,
 } = require('./lib/redact');
 const { ensureSkillRecordsReadme } = require('./lib/skillRecordsReadme');
+const { runSyncSessions, runSyncSession } = require('./lib/sync/runSync');
 const { assertAllowedUserSettings, resolveAllowedUserSettingKeys } = require('./lib/settingsPolicy');
 const { hardenToolSchema } = require('./lib/toolSchema');
 
@@ -45,6 +46,8 @@ const CLI_COMMANDS = [
   { name: 'state', description: '读取当前 page profile 状态' },
   { name: 'session-state', description: '读取登录态' },
   { name: 'list-sessions', description: '列出历史会话（标题 / 时间 / 模型类型，不含正文）' },
+  { name: 'sync-sessions', description: '增量同步会话列表水位到本地 sync/index.json（不含正文）' },
+  { name: 'sync-session', description: '增量同步单个会话消息 hash（可选 storeTree 落全树）' },
   { name: 'get-session', description: '读取单个会话消息历史（默认 redact=off）' },
   { name: 'chat-page-state', description: '读取当前 chat 页 UI 状态快照' },
   { name: 'list-messages', description: '列出当前会话的消息元数据（永不含正文）' },
@@ -247,6 +250,59 @@ const TOOL_DEFINITIONS = finalizeTools([
     risk: 'read', optional: true, interactive: false, destructive: false, sideEffect: null,
     pageKey: 'home', method: 'listSessions',
     execute: makeReadToolExecutor({ toolName: 'deepseek_list_sessions', pageKey: 'home', method: 'listSessions', buildTargetUrl: () => targets.homeUrl() }),
+  },
+  {
+    name: 'deepseek_sync_sessions',
+    label: 'DeepSeek Ops: Sync Sessions',
+    description: '增量同步历史会话列表到本地 sync/index.json。只写元数据（title 为 length+sha256），不含正文。默认按 version/updatedAt/pinned 停页；full=true 翻完全部并标记 disappeared。',
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: '每页条数，默认 100，上限 100' },
+        full: { type: 'boolean', description: '完整翻页并标记列表中消失的会话' },
+        beforeSeqId: { type: 'string', description: '起始分页游标（一般不用）' },
+      },
+      required: [],
+    },
+    risk: 'read', optional: true, interactive: false, destructive: false, sideEffect: null,
+    pageKey: 'home', method: 'syncSessions',
+    execute(runtime, params, context = {}) {
+      return runSyncSessions({
+        bot: runtime.ensureBot(),
+        skillDir: runtime.config.skillDataRoot,
+        recording: runtime.config.recording,
+        wsEndpoint: runtime.config.serverUrl,
+        runId: context.toolCallId,
+        args: params || {},
+      });
+    },
+  },
+  {
+    name: 'deepseek_sync_session',
+    label: 'DeepSeek Ops: Sync Session',
+    description: '增量同步单个会话：version 相同则跳过；否则拉 history_messages 合并 messageId→hash 到 sync/sessions/<id>/meta.json。storeTree=true 才落正文树。工具返回永不带正文。',
+    parameters: {
+      type: 'object',
+      properties: {
+        sessionId: { type: 'string' },
+        force: { type: 'boolean', description: '忽略 version 短路，强制拉历史' },
+        storeTree: { type: 'boolean', description: '把全树正文写入 tree.json（0600）' },
+        version: { type: 'number', description: '覆盖用于比较的远端 version' },
+      },
+      required: ['sessionId'],
+    },
+    risk: 'read', optional: true, interactive: false, destructive: false, sideEffect: null,
+    pageKey: 'home', method: 'syncSession',
+    execute(runtime, params, context = {}) {
+      return runSyncSession({
+        bot: runtime.ensureBot(),
+        skillDir: runtime.config.skillDataRoot,
+        recording: runtime.config.recording,
+        wsEndpoint: runtime.config.serverUrl,
+        runId: context.toolCallId,
+        args: params || {},
+      });
+    },
   },
   {
     name: 'deepseek_get_session',

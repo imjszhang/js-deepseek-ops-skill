@@ -1,7 +1,7 @@
 ---
 name: js-deepseek-ops-skill
 description: DeepSeek Chat 全量自动化 skill：READ + INTERACTIVE + DESTRUCTIVE 三档；登录态 / 历史会话 / 单会话历史 / chat 页深度只读 + 创建/重命名/置顶 / 反馈 / 上传 / 分享 / 账号设置 / DOM 模式发/编辑/重生消息（绕开 PoW）。所有 destructive 调用强制写 audit.jsonl，irreversible 调用前自动 backup。**v0.3.3 起不再暴露删除会话工具**（不可逆且无可靠补偿，请走官方 UI）。
-version: 0.7.0
+version: 0.8.0
 metadata:
   openclaw:
     emoji: "\U0001F9E0"
@@ -59,7 +59,7 @@ metadata:
 纯读，不改 DOM / URL / 业务数据。
 
 - 走 `fetchDeepseekJson(path, options)` 调 DeepSeek 同源 GET / POST(read-like) 端点
-- 工具：`deepseek_session_state` / `deepseek_list_sessions` / `deepseek_get_session` / `deepseek_chat_page_state` / `deepseek_list_messages` / `deepseek_get_message` / `deepseek_streaming_status` / `deepseek_chat_settings_view` / `deepseek_list_files` / `deepseek_list_shares`
+- 工具：`deepseek_session_state` / `deepseek_list_sessions` / `deepseek_sync_sessions` / `deepseek_sync_session` / `deepseek_get_session` / `deepseek_chat_page_state` / `deepseek_list_messages` / `deepseek_get_message` / `deepseek_streaming_status` / `deepseek_chat_settings_view` / `deepseek_list_files` / `deepseek_list_shares`
 - `get_session` / `get_message` 默认 `redact='off'`：`messages[].content` 替换为 `{contentHash:sha256, contentLength}`，正文不出
 - `list_messages` 永远只回元数据；额外 Node 端 `buildListMessagesTransform` 防漏断言
 
@@ -90,15 +90,17 @@ branch-manager 的 scan 默认 `redact=off`，需要正文时必须显式指定 
 **Backup 文件**：当前 `unshare_session` 写入 `backups/share-<id>-<ISO ts>.json`，保存
 删除前的分享列表快照（敏感字段同样脱敏）。它用于审计和人工核对，不保证能恢复服务端分享。
 
-## 工具清单（共 33 个）
+## 工具清单（共 35 个）
 
-### READ（13 个）
+### READ（15 个）
 
 | 工具 | 说明 |
 |---|---|
 | `deepseek_session_state` | 登录态 / 用户基本信息 |
 | `deepseek_list_sessions` | 历史会话列表（标题 / 时间，不含正文） |
-| `deepseek_get_session` | 单会话消息历史（含全分支节点平铺；默认 redact off） |
+| `deepseek_sync_sessions` | **v0.8.0** 增量同步列表水位到 `sync/index.json`（只写 meta；`full` 才标 disappeared） |
+| `deepseek_sync_session` | **v0.8.0** 按 version 跳过或合并 message hash；`storeTree` 才落正文树 |
+| `deepseek_get_session` | 单会话消息历史（含全分支节点平铺；默认 redact off；**不读本地 sync**） |
 | `deepseek_get_session_tree` | **v0.4.0** 会话全分支树（nodes map + activePathIds + branchPointIds + stats） |
 | `deepseek_list_branch_points` | **v0.4.0** 仅分支点 + children 摘要（轻量发现，永不带正文） |
 | `deepseek_get_branch_path` | **v0.4.0** 从指定 leaf 反推 root 的线性路径（默认 leaf=current；schema 兼容 get_session） |
@@ -164,6 +166,11 @@ branch-manager 的 scan 默认 `redact=off`，需要正文时必须显式指定 
 # READ
 node index.js doctor
 node index.js list-sessions --limit 25
+node index.js sync-sessions --limit 100
+node index.js sync-sessions --full
+node index.js sync-session <sid>
+node index.js sync-session <sid> --force
+node index.js sync-session <sid> --store-tree
 node index.js get-session <sid> --limit 20 --pretty
 node index.js list-messages <sid>
 node index.js get-message <sid> 12 --redact trunc
@@ -228,12 +235,13 @@ node index.js xhr-log --filter "/api/v0/" --limit 200
 │   ├─ toolSchema.js        ← 闭合输入 schema（definition 导出前硬化）
 │   ├─ session.js           ← bridge 注入 / callApi / callRaw / awaitBridgeAfterNav
 │   ├─ commands.js          ← CLI 命令注册（含 destructive kind）
+│   ├─ sync/                ← 增量同步（store / diff / merge / interpret / runSync）
 │   └─ ...
 │
 ├─ bridges/
 │   ├─ common.js            ← 共享 helpers（fetchDeepseekJson POST/GET / digestText / readDeviceId / ...）
-│   ├─ home-bridge.js       ← v0.3.4 — home 页 + DESTRUCTIVE 子集（create/rename/pin/share/...，已移除 delete）
-│   └─ chat-bridge.js       ← v0.3.4 — chat 页全集（含 SSE / PoW solvePowChallenge）
+│   ├─ home-bridge.js       ← v0.3.7 — home 页 + DESTRUCTIVE 子集 + getSessionForSync
+│   └─ chat-bridge.js       ← v0.3.18 — chat 页全集（含 SSE / PoW；history 拉取与 common 共用）
 │
 └─ cli/index.js             ← runDestructiveCommand / runExportSessionLocal 等
 ```
@@ -266,4 +274,5 @@ lib/audit.writeAuditEntry  ← 脱敏 args/result + backup_path 落 audit.jsonl�
 - **history**：`~/.js-eyes/skill-records/js-deepseek-ops-skill/history/tool_calls.jsonl`
 - **audit**（v0.3 新）：`~/.js-eyes/skill-records/js-deepseek-ops-skill/audit/audit.jsonl`
 - **backup**（v0.3 新）：`~/.js-eyes/skill-records/js-deepseek-ops-skill/backups/<resource>-<id>-<ts>.json`
+- **sync**（v0.8.0）：`~/.js-eyes/skill-records/js-deepseek-ops-skill/sync/`（默认只 meta/hash；`--store-tree` 才有正文）
 - **debug bundle**（`--debug-recording`）：`~/.js-eyes/skill-records/js-deepseek-ops-skill/debug/<run-id>/`

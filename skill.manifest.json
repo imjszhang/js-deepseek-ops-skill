@@ -2,9 +2,9 @@
   "manifestVersion": 2,
   "id": "js-deepseek-ops-skill",
   "name": "JS DeepSeek Ops Skill",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "publisher": "imjszhang",
-  "description": "DeepSeek Chat 自动化技能：33 个工具、Skill Runtime V2 清单、skill-scaffold / definition SSOT、默认脱敏审计与不可逆操作备份",
+  "description": "DeepSeek Chat 自动化技能：35 个工具、Skill Runtime V2 清单、skill-scaffold / definition SSOT、默认脱敏审计与不可逆操作备份",
   "entry": "./skill.entry.js",
   "compatibility": {
     "jsEyes": ">=2.8.5 <3",
@@ -60,6 +60,14 @@
       {
         "name": "list-sessions",
         "description": "列出历史会话（标题 / 时间 / 模型类型，不含正文）"
+      },
+      {
+        "name": "sync-sessions",
+        "description": "增量同步会话列表水位到本地 sync/index.json（不含正文）"
+      },
+      {
+        "name": "sync-session",
+        "description": "增量同步单个会话消息 hash（可选 storeTree 落全树）"
       },
       {
         "name": "get-session",
@@ -224,6 +232,83 @@
           }
         },
         "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "deepseek_sync_sessions",
+      "title": "DeepSeek Ops: Sync Sessions",
+      "description": "增量同步历史会话列表到本地 sync/index.json。只写元数据（title 为 length+sha256），不含正文。默认按 version/updatedAt/pinned 停页；full=true 翻完全部并标记 disappeared。",
+      "risk": "read",
+      "capabilities": [
+        "browser.tabs.read",
+        "browser.page.read",
+        "browser.navigation",
+        "browser.script.execute",
+        "filesystem.skillData"
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "每页条数，默认 100，上限 100",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "full": {
+            "type": "boolean",
+            "description": "完整翻页并标记列表中消失的会话"
+          },
+          "beforeSeqId": {
+            "type": "string",
+            "description": "起始分页游标（一般不用）",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "deepseek_sync_session",
+      "title": "DeepSeek Ops: Sync Session",
+      "description": "增量同步单个会话：version 相同则跳过；否则拉 history_messages 合并 messageId→hash 到 sync/sessions/<id>/meta.json。storeTree=true 才落正文树。工具返回永不带正文。",
+      "risk": "read",
+      "capabilities": [
+        "browser.tabs.read",
+        "browser.page.read",
+        "browser.navigation",
+        "browser.script.execute",
+        "filesystem.skillData"
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "force": {
+            "type": "boolean",
+            "description": "忽略 version 短路，强制拉历史"
+          },
+          "storeTree": {
+            "type": "boolean",
+            "description": "把全树正文写入 tree.json（0600）"
+          },
+          "version": {
+            "type": "integer",
+            "description": "覆盖用于比较的远端 version",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "sessionId"
+        ],
         "additionalProperties": false
       }
     },

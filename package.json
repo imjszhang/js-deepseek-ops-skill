@@ -1,7 +1,7 @@
 {
   "name": "js-deepseek-ops-skill",
-  "version": "0.7.0",
-  "description": "DeepSeek Chat 自动化技能：33 个工具、Skill Runtime V2 清单、skill-scaffold / definition SSOT、默认脱敏审计与不可逆操作备份",
+  "version": "0.8.0",
+  "description": "DeepSeek Chat 自动化技能：35 个工具、Skill Runtime V2 清单、skill-scaffold / definition SSOT、默认脱敏审计与不可逆操作备份",
   "private": true,
   "main": "index.js",
   "scripts": {
@@ -14,6 +14,8 @@
     "state": "node index.js state",
     "session-state": "node index.js session-state",
     "list-sessions": "node index.js list-sessions",
+    "sync-sessions": "node index.js sync-sessions",
+    "sync-session": "node index.js sync-session",
     "get-session": "node index.js get-session",
     "chat-page-state": "node index.js chat-page-state",
     "list-messages": "node index.js list-messages",

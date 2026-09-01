@@ -3,7 +3,7 @@
 // DeepSeek Chat 主页 bridge（v0.3.0 — DESTRUCTIVE 解锁）。
 //
 // 暴露 window.__jse_deepseek_home__ API：
-//   READ: probe / state / sessionState / listSessions
+//   READ: probe / state / sessionState / listSessions / getSessionForSync
 //   INTERACTIVE: navigateHome / navigateNewChat / navigateSession
 //   DESTRUCTIVE: createSession / renameSession / pinSession / unpinSession /
 //                shareSession / unshareSession / listShares /
@@ -17,7 +17,7 @@
 
 (function install() {
   'use strict';
-  const VERSION = '0.3.6';
+  const VERSION = '0.3.7';
 
   // @@include ../lib/composerOptions.js
   // @@include ./common.js
@@ -122,31 +122,67 @@
 
   // 注：v0.3.3 移除 deleteSession（不可逆操作；端点仍存在但 bridge 不再封装）
 
-  async function getSessionSnapshot(args) {
-    // 与 chat-bridge 同名实现保持一致，便于 home 端 prefetchBackup 在不切 tab 的情况下取快照
+  async function getSessionForSync(args) {
     args = args || {};
     const sid = args.sessionId;
     if (!sid) return errResult('missing_session_id');
-    const path = '/api/v0/chat/history_messages?chat_session_id=' + encodeURIComponent(String(sid));
-    const resp = await fetchDeepseekJson(path, { textLimit: 800 });
-    const u = unwrapDeepseekResponse(resp);
-    if (!u.ok) return errResult(u.error || 'fetch_failed', { httpStatus: resp.httpStatus, bizCode: u.bizCode, bizMsg: u.bizMsg });
+    const includeContent = !!args.includeContent;
+    const { resp, unwrapped: u, cacheResetAt, notModified } = await fetchHistoryMessagesRaw(sid, {
+      cacheVersion: args.cacheVersion,
+      cacheResetAt: args.cacheResetAt,
+    });
+    if (!u.ok) return mapHistoryError(resp, u, sid);
     const biz = u.biz || {};
     const sess = normalizeChatSessionItem(biz.chat_session) || { id: sid };
     const rawMsgs = Array.isArray(biz.chat_messages) ? biz.chat_messages : [];
     const out = [];
-    for (const m of rawMsgs) {
-      const norm = normalizeChatMessage(m, { contentMaxLen: 200000 });
-      if (!norm) continue;
-      const dc = await digestText(norm.content || '');
-      out.push({
-        messageId: norm.messageId, role: norm.role, status: norm.status,
-        parentId: norm.parentId, model: norm.model, insertedAt: norm.insertedAt,
-        contentLength: dc.length, contentHash: dc.sha256,
-        files: norm.files, feedback: norm.feedback,
-      });
+    if (!notModified) {
+      const contentMaxLen = clampLimit(args.contentMaxLen, 200000, 200000);
+      for (const m of rawMsgs) {
+        const norm = normalizeChatMessage(m, { contentMaxLen: includeContent ? contentMaxLen : 200000 });
+        if (!norm) continue;
+        const dc = await digestText(norm.content || '');
+        const dt = norm.thinkingContent ? await digestText(norm.thinkingContent) : null;
+        const row = {
+          messageId: norm.messageId,
+          role: norm.role,
+          status: norm.status,
+          parentId: norm.parentId,
+          model: norm.model,
+          insertedAt: norm.insertedAt,
+          contentLength: dc.length,
+          contentHash: dc.sha256,
+          thinkingLength: dt ? dt.length : 0,
+          thinkingHash: dt ? dt.sha256 : null,
+          files: norm.files,
+          feedback: norm.feedback,
+        };
+        if (includeContent) {
+          row.content = norm.content;
+          row.thinkingContent = norm.thinkingContent;
+        }
+        out.push(row);
+      }
     }
-    return okResult({ session: sess, messages: out, messageCount: out.length, sourceUrl: resp.url, timestamp: new Date().toISOString() });
+    return okResult({
+      session: sess,
+      messages: out,
+      messageCount: notModified ? 0 : rawMsgs.length,
+      returnedCount: out.length,
+      cacheResetAt,
+      httpStatus: resp ? resp.httpStatus : null,
+      notModified: !!notModified,
+      bizFlags: {
+        not_modified: !!(biz.not_modified || notModified),
+        cache_valid: !!biz.cache_valid,
+      },
+      sourceUrl: resp.url,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  async function getSessionSnapshot(args) {
+    return getSessionForSync(Object.assign({}, args || {}, { includeContent: false }));
   }
 
   async function listShares(args) {
@@ -291,7 +327,7 @@
     probe, state, sessionState, listSessions,
     navigateHome, navigateNewChat, navigateSession,
     createSession, renameSession, pinSession, unpinSession,
-    getSessionSnapshot,
+    getSessionSnapshot, getSessionForSync,
     domSendMessage, domStopStream,
     shareSession, unshareSession, listShares,
     updateUserSettings,

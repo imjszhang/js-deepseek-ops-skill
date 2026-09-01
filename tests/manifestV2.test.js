@@ -14,7 +14,7 @@ test('V2 manifest 与 definition/entry 保持一一对应', () => {
   assert.equal(manifest.version, pkg.version);
   assert.equal(manifest.entry, './skill.entry.js');
   assert.equal(manifest.publisher, 'imjszhang');
-  assert.equal(manifest.tools.length, 33);
+  assert.equal(manifest.tools.length, 35);
   assert.equal(new Set(manifest.tools.map((tool) => tool.name)).size, manifest.tools.length);
   assert.deepEqual(
     manifest.tools.map((tool) => tool.name),
@@ -42,7 +42,7 @@ test('V2 manifest 声明最小能力、风险和闭合输入 schema', () => {
     acc[tool.risk] = (acc[tool.risk] || 0) + 1;
     return acc;
   }, {});
-  assert.deepEqual(risks, { read: 13, interactive: 3, destructive: 16, administrative: 1 });
+  assert.deepEqual(risks, { read: 15, interactive: 3, destructive: 16, administrative: 1 });
   for (const tool of manifest.tools) {
     assert.equal(tool.inputSchema.additionalProperties, false, tool.name);
     assert.ok(tool.capabilities.includes('browser.script.execute'), tool.name);

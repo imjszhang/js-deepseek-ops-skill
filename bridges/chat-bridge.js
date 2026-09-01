@@ -38,7 +38,7 @@
 
 (function install() {
   'use strict';
-  const VERSION = '0.3.17';
+  const VERSION = '0.3.18';
 
   // @@include ../lib/composerOptions.js
   // @@include ./common.js
@@ -78,28 +78,7 @@
 
   async function sessionState() { return sessionStateCommon(); }
 
-  // ---- READ helpers ----
-  async function fetchHistoryMessagesRaw(sid) {
-    const path = '/api/v0/chat/history_messages?chat_session_id=' + encodeURIComponent(String(sid));
-    const resp = await fetchDeepseekJson(path, { textLimit: 800 });
-    const u = unwrapDeepseekResponse(resp);
-    return { resp, unwrapped: u };
-  }
-
-  function mapHistoryError(resp, u, sid) {
-    if (resp && (resp.httpStatus === 401 || resp.httpStatus === 403)) {
-      return errResult('not_logged_in', { httpStatus: resp.httpStatus });
-    }
-    if (resp && resp.httpStatus === 404) {
-      return errResult('session_not_found', { httpStatus: resp.httpStatus, sessionId: sid });
-    }
-    return errResult(u.error || 'fetch_failed', {
-      httpStatus: resp ? resp.httpStatus : null,
-      bizCode: u.bizCode,
-      bizMsg: u.bizMsg,
-    });
-  }
-
+  // ---- READ helpers（fetchHistoryMessagesRaw / mapHistoryError 来自 common.js） ----
   async function getSession(args) {
     args = args || {};
     const sid = args.sessionId || parseChatSessionId(location.href);

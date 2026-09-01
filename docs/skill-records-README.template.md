@@ -12,6 +12,9 @@
 - `debug/`：仅在 `--debug-recording` 模式下生成；包含步骤时间线 / target meta / bridge meta / **result 快照**
   - 即便 debug 模式开启，`deepseek_get_session` 的 `messages[].content` / `thinkingContent` 默认仍被 redact 成 `{length, sha256}` 摘要
   - 只有同时传 `--redact full --debug-recording` 才会落正文
+- `sync/`：增量同步水位（`deepseek_sync_sessions` / `deepseek_sync_session`）
+  - `index.json` / `sessions/<id>/meta.json` **只含元数据与 content hash**，不含正文
+  - 仅当显式 `storeTree=true` / `--store-tree` 时才会写 `sessions/<id>/tree.json`（**含私聊正文**，0600）
 
 但如果你显式传 `--redact full --debug-recording`，**debug 目录会包含原文 DeepSeek 私聊**。
 POSIX 上根目录/子目录会收紧为 `0700`，记录文件会收紧为 `0600`。
@@ -44,6 +47,11 @@ POSIX 上根目录/子目录会收紧为 `0700`，记录文件会收紧为 `0600
 │   └── audit.jsonl                   <- 默认脱敏的写操作审计
 ├── backups/
 │   └── share-<id>-<timestamp>.json   <- 不可逆操作前的脱敏快照
+├── sync/
+│   ├── index.json                    <- 会话列表水位（title 仅 length+sha256）
+│   └── sessions/<sid>/
+│       ├── meta.json                 <- messageId→hash
+│       └── tree.json                 <- 仅 --store-tree，含正文
 └── debug/
     └── <runId>/
         ├── meta.json

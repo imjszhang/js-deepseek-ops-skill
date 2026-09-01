@@ -153,6 +153,66 @@ function unwrapDeepseekResponse(resp) {
   return { ok: true, biz: inner.biz_data == null ? null : inner.biz_data, data: inner };
 }
 
+function extractCacheResetAt(biz) {
+  if (!biz || typeof biz !== 'object') return null;
+  const sess = biz.chat_session && typeof biz.chat_session === 'object' ? biz.chat_session : {};
+  const candidates = [biz.cache_reset_at, biz.cacheResetAt, sess.cache_reset_at, sess.cacheResetAt];
+  for (let i = 0; i < candidates.length; i++) {
+    const v = candidates[i];
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+    if (typeof v === 'string' && /^\d+$/.test(v)) return Number(v);
+  }
+  return null;
+}
+
+/**
+ * fetchHistoryMessagesRaw - 单会话全树。可选 cache_version / cache_reset_at。
+ * HTTP 304 视为 notModified（L1）；空 chat_messages 本身不解释成未变更。
+ */
+async function fetchHistoryMessagesRaw(sid, options) {
+  options = options || {};
+  let path = '/api/v0/chat/history_messages?chat_session_id=' + encodeURIComponent(String(sid));
+  if (options.cacheVersion != null && options.cacheVersion !== '') {
+    path += '&cache_version=' + encodeURIComponent(String(options.cacheVersion));
+  }
+  if (options.cacheResetAt != null && options.cacheResetAt !== '') {
+    path += '&cache_reset_at=' + encodeURIComponent(String(options.cacheResetAt));
+  }
+  const resp = await fetchDeepseekJson(path, { textLimit: 800 });
+  if (resp && resp.httpStatus === 304) {
+    return {
+      resp,
+      unwrapped: { ok: true, biz: { chat_session: null, chat_messages: [], not_modified: true }, data: {} },
+      cacheResetAt: null,
+      notModified: true,
+    };
+  }
+  const u = unwrapDeepseekResponse(resp);
+  const biz = u.ok ? (u.biz || {}) : null;
+  const notModified = !!(biz && (biz.not_modified === true || biz.cache_valid === true));
+  return {
+    resp,
+    unwrapped: u,
+    cacheResetAt: extractCacheResetAt(biz),
+    notModified,
+  };
+}
+
+function mapHistoryError(resp, u, sid) {
+  if (resp && (resp.httpStatus === 401 || resp.httpStatus === 403)) {
+    return errResult('not_logged_in', { httpStatus: resp.httpStatus });
+  }
+  if (resp && resp.httpStatus === 404) {
+    return errResult('session_not_found', { httpStatus: resp.httpStatus, sessionId: sid });
+  }
+  return errResult((u && u.error) || 'fetch_failed', {
+    httpStatus: resp ? resp.httpStatus : null,
+    bizCode: u ? u.bizCode : null,
+    bizMsg: u ? u.bizMsg : null,
+    sessionId: sid || null,
+  });
+}
+
 async function readMeViaApi(force) {
   const href = location.href;
   if (!force && __jseDeepseekCache.meHref === href && __jseDeepseekCache.me) return __jseDeepseekCache.me;
