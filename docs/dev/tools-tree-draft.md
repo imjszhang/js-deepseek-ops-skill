@@ -1,7 +1,7 @@
 # 全分支树工具 contract 草稿（v0.4.0 候选）
 
 > 日期：2026-05-07
-> 状态：Draft（不要复制到 [skill.contract.js](../../skill.contract.js)；二期照此实施）
+> 状态：Draft（不要复制到 [skill.definition.js](../../skill.definition.js)；二期照此实施）
 > 关联：[adr-001-branch-tree-route.md](./adr-001-branch-tree-route.md) / [session-tree-schema.md](./session-tree-schema.md)
 
 本文档定义二期将注册到 `TOOL_DEFINITIONS` 的 3 个新工具的契约。一期**不动 contract / lib/commands / cli**。
@@ -198,7 +198,7 @@ node index.js get-branch-path <sid> --leaf 33 --redact full
 
 ---
 
-## 注册到 `skill.contract.js` 的草稿（伪代码，二期实施）
+## 注册到 `skill.definition.js` 的草稿（伪代码，二期实施）
 
 ```js
 {

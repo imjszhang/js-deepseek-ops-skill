@@ -89,7 +89,7 @@ IIFE scope 可见。
 4. **bump `bridges/<x>-bridge.js` 顶部的 `VERSION`**（漏 bump = 老 bridge 跑你的新代码）
 5. 跑 `node index.js doctor` 验证整体连通
 6. 跑相关 CLI 命令验证业务方法
-7. 业务方法返回字段稳定后再加进 `skill.contract.js`
+7. 业务方法返回字段稳定后再加进 `skill.definition.js`
 
 ## 常见错误码（业务侧）
 

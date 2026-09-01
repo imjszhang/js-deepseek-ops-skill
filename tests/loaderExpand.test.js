@@ -65,3 +65,15 @@ test('@@include ../lib/sessionTree.js 能从 bridges/ 解析到 lib/', () => {
   assert.ok(out.includes('function buildSessionTree'));
   assert.ok(out.includes('function _emptyTreeStats'));
 });
+
+test('chat-bridge 先嵌入 composerOptions 再嵌入 common', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'bridges', 'chat-bridge.js'), 'utf8');
+  const out = expandBridgeSource(src);
+  assert.ok(!/^[ \t]*\/\/\s*@@include\s+/m.test(out), '不应残留 @@include 指令');
+  const optsAt = out.indexOf('function normalizeComposerArgs');
+  const chromeAt = out.indexOf('function readComposerChrome');
+  const treeAt = out.indexOf('function buildSessionTree');
+  assert.ok(optsAt !== -1 && chromeAt !== -1 && treeAt !== -1);
+  assert.ok(optsAt < chromeAt, 'composerOptions 应在 common 之前');
+  assert.ok(chromeAt < treeAt, 'common 应在 sessionTree 之前');
+});

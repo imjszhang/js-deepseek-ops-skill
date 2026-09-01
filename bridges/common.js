@@ -434,6 +434,172 @@ async function readChatPageDom() {
     scrollAtBottom,
     titleText,
     visibleMessageCount,
+    chrome: readComposerChrome(),
+  };
+}
+
+function emptyComposerChrome() {
+  return {
+    modelType: null,
+    modelLabel: null,
+    thinkingEnabled: null,
+    searchEnabled: null,
+    attachVisible: false,
+    models: [],
+  };
+}
+
+function clipComposerText(el) {
+  return String((el && el.innerText) || '').replace(/\s+/g, ' ').trim();
+}
+
+function isVisibleBox(el) {
+  if (!el || !el.getBoundingClientRect) return false;
+  const r = el.getBoundingClientRect();
+  return r.width > 0 && r.height > 0;
+}
+
+function readModelConfigsLite() {
+  try {
+    const raw = localStorage.getItem('__ds_remote_feature_store_model');
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    const list = parsed && parsed.entries && parsed.entries.model_configs
+      ? parsed.entries.model_configs.value
+      : null;
+    if (!Array.isArray(list)) return [];
+    return list.map((m) => ({
+      modelType: m && m.model_type ? String(m.model_type) : null,
+      name: m && m.name ? String(m.name) : null,
+      description: m && m.description ? String(m.description) : null,
+      enabled: !!(m && m.enabled),
+      searchAvailable: !!(m && m.search_feature),
+      fileAvailable: !!(m && m.file_feature),
+    }));
+  } catch (_) {
+    return [];
+  }
+}
+
+function findModeRadio(mode) {
+  const label = COMPOSER_MODE_LABELS[mode] || '';
+  if (!label) return null;
+  return Array.from(document.querySelectorAll('[role="radio"]')).find((el) => {
+    return isVisibleBox(el) && clipComposerText(el).indexOf(label) !== -1;
+  }) || null;
+}
+
+function findToggleButton(label) {
+  return Array.from(document.querySelectorAll('.ds-toggle-button')).find((el) => {
+    return isVisibleBox(el) && clipComposerText(el).indexOf(label) !== -1;
+  }) || null;
+}
+
+function readComposerChrome() {
+  const chrome = emptyComposerChrome();
+  try {
+    const radios = Array.from(document.querySelectorAll('[role="radio"]')).filter(isVisibleBox);
+    for (const el of radios) {
+      const text = clipComposerText(el);
+      const mode = resolveComposerMode(text);
+      if (!mode) continue;
+      if (el.getAttribute('aria-checked') === 'true') {
+        chrome.modelType = mode;
+        chrome.modelLabel = COMPOSER_MODE_LABELS[mode] || text;
+      }
+    }
+    const think = findToggleButton('深度思考');
+    if (think) {
+      chrome.thinkingEnabled = think.getAttribute('aria-pressed') === 'true'
+        || think.classList.contains('ds-toggle-button--selected');
+    }
+    const search = findToggleButton('智能搜索');
+    if (search) {
+      chrome.searchEnabled = search.getAttribute('aria-pressed') === 'true'
+        || search.classList.contains('ds-toggle-button--selected');
+    } else if (chrome.modelType === 'expert') {
+      chrome.searchEnabled = null;
+    }
+    const file = document.querySelector('input[type="file"]');
+    const attachBtn = Array.from(document.querySelectorAll('[role="button"].ds-button--iconLabelPrimary, .ds-button--iconLabelPrimary')).find(isVisibleBox);
+    chrome.attachVisible = !!(file && attachBtn);
+    chrome.models = readModelConfigsLite();
+  } catch (_) {}
+  return chrome;
+}
+
+async function applyToggle(label, on) {
+  const btn = findToggleButton(label);
+  if (!btn) {
+    return { ok: !on, clicked: false, missing: true };
+  }
+  const current = btn.getAttribute('aria-pressed') === 'true'
+    || btn.classList.contains('ds-toggle-button--selected');
+  if (current === !!on) return { ok: true, clicked: false, missing: false };
+  btn.click();
+  const wait = await waitFor(() => {
+    const el = findToggleButton(label);
+    if (!el) return null;
+    const next = el.getAttribute('aria-pressed') === 'true'
+      || el.classList.contains('ds-toggle-button--selected');
+    return next === !!on ? el : null;
+  }, { timeoutMs: 3000, intervalMs: 80 });
+  return { ok: wait.ok, clicked: true, missing: false };
+}
+
+/**
+ * 只处理已定义字段。失败返回 { ok:false, error }；成功返回 { ok:true, applied, chrome, chromeBefore }。
+ */
+async function applyComposerChrome(opts) {
+  const spec = opts || {};
+  const chromeBefore = readComposerChrome();
+  const applied = {};
+
+  if (spec.mode) {
+    const radio = findModeRadio(spec.mode);
+    if (!radio) {
+      return errResult('mode_switch_failed', { reason: 'radio_not_found', mode: spec.mode, chromeBefore });
+    }
+    if (radio.getAttribute('aria-checked') !== 'true') {
+      radio.click();
+      const wait = await waitFor(() => {
+        const el = findModeRadio(spec.mode);
+        return el && el.getAttribute('aria-checked') === 'true' ? el : null;
+      }, { timeoutMs: 3000, intervalMs: 80 });
+      if (!wait.ok) {
+        return errResult('mode_switch_failed', { mode: spec.mode, chromeBefore, chrome: readComposerChrome() });
+      }
+      applied.mode = spec.mode;
+    }
+  }
+
+  const afterMode = readComposerChrome();
+  if (spec.search === true && (spec.mode === 'expert' || afterMode.modelType === 'expert')) {
+    return errResult('search_not_available_in_mode', { mode: 'expert', chromeBefore, chrome: afterMode });
+  }
+
+  if (spec.thinking !== undefined) {
+    const r = await applyToggle('深度思考', spec.thinking);
+    if (!r.ok) {
+      return errResult('toggle_failed', { field: 'thinking', missing: !!r.missing, chromeBefore, chrome: readComposerChrome() });
+    }
+    if (r.clicked) applied.thinking = spec.thinking;
+  }
+
+  if (spec.search !== undefined) {
+    const r = await applyToggle('智能搜索', spec.search);
+    if (!r.ok) {
+      const err = r.missing ? 'search_not_available_in_mode' : 'toggle_failed';
+      return errResult(err, { field: 'search', mode: readComposerChrome().modelType, missing: !!r.missing, chromeBefore, chrome: readComposerChrome() });
+    }
+    if (r.clicked) applied.search = spec.search;
+  }
+
+  return {
+    ok: true,
+    applied,
+    chromeBefore,
+    chrome: readComposerChrome(),
   };
 }
 
@@ -517,10 +683,12 @@ function setReactInputValue(el, value) {
 /**
  * findComposerSendButton - 启发式定位 chat 页 composer 的"发送"按钮。
  *
- * 当前 DeepSeek (2026-05) 实现：composer 区底部有 4 个 ds-icon-button--l：
- * 思考 toggle / 搜索 toggle / 上传 / 发送（最右）。送达条件：
+ * 当前 DeepSeek (2026-09) 实现：composer 行发送按钮是
+ * `.ds-button--primary.ds-button--filled.ds-button--circle`（向上箭头）。
+ * 2026-05 旧版是 composer 底部 4 个 `.ds-icon-button--l`，最右为发送。
+ * 送达条件：
  *   - 在 composer 行（rect.y > taRect.bottom）
- *   - x 最大者
+ *   - 优先新版 primary circle；否则退回旧版最右 icon-button
  *   - !disabled && aria-disabled !== 'true'
  *
  * composer 空时发送按钮 disabled，应在调用 setReactInputValue 后再调用本函数。
@@ -528,19 +696,32 @@ function setReactInputValue(el, value) {
  * @param {HTMLTextAreaElement|null} ta  composer textarea，用于参考底边
  * @returns {HTMLElement|null}
  */
-function findComposerSendButton(ta) {
+function collectComposerRowButtons(ta) {
   const taBottom = ta && ta.getBoundingClientRect ? ta.getBoundingClientRect().bottom : 400;
-  // 兼容 <button> 与 <div role="button"> 与无 role 纯 div.ds-icon-button（实测三种都出现过）
-  const btns = Array.from(document.querySelectorAll('.ds-icon-button--l'));
-  const cands = btns
-    .filter((b) => !b.disabled && b.getAttribute('aria-disabled') !== 'true' && !b.classList.contains('ds-icon-button--disabled'))
-    .filter((b) => {
-      const r = b.getBoundingClientRect();
-      return r.width > 0 && r.height > 0 && r.y >= taBottom - 50;
-    });
+  const nodes = new Set([
+    ...document.querySelectorAll('.ds-icon-button--l'),
+    ...document.querySelectorAll('.ds-button--primary.ds-button--circle'),
+    ...document.querySelectorAll('[role="button"].ds-button--circle'),
+  ]);
+  return Array.from(nodes).filter((b) => {
+    if (b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
+    if (b.classList.contains('ds-icon-button--disabled') || b.classList.contains('ds-button--disabled')) return false;
+    const r = b.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && r.y >= taBottom - 50;
+  });
+}
+
+function pickRightmost(btns) {
+  const list = btns.slice();
+  list.sort((a, b) => b.getBoundingClientRect().x - a.getBoundingClientRect().x);
+  return list[0] || null;
+}
+
+function findComposerSendButton(ta) {
+  const cands = collectComposerRowButtons(ta);
   if (!cands.length) return null;
-  cands.sort((a, b) => b.getBoundingClientRect().x - a.getBoundingClientRect().x);
-  return cands[0];
+  const primary = cands.filter((b) => b.classList.contains('ds-button--primary') && b.classList.contains('ds-button--filled'));
+  return pickRightmost(primary.length ? primary : cands);
 }
 
 /**
@@ -550,16 +731,7 @@ function findComposerSendButton(ta) {
  * 调用方需自己判断当前是否在流式（streamingStatus）。
  */
 function findComposerStopButton(ta) {
-  const taBottom = ta && ta.getBoundingClientRect ? ta.getBoundingClientRect().bottom : 400;
-  const btns = Array.from(document.querySelectorAll('.ds-icon-button--l'));
-  const cands = btns.filter((b) => {
-    if (b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
-    const r = b.getBoundingClientRect();
-    return r.width > 0 && r.y >= taBottom - 50;
-  });
-  if (!cands.length) return null;
-  cands.sort((a, b) => b.getBoundingClientRect().x - a.getBoundingClientRect().x);
-  return cands[0];
+  return pickRightmost(collectComposerRowButtons(ta));
 }
 
 /**

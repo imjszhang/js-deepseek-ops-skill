@@ -218,21 +218,39 @@ LLM 自负责传合法 key。
 
 ---
 
+## 新对话 composer（2026-09 UI）
+
+首页 `/` 与会话页 composer 共用一套控件。`chat_page_state` 只读暴露为 `chrome`；`dom_send_message` 仅在调用方显式传入时才切换。
+
+| UI | 归一化 | 备注 |
+|---|---|---|
+| 快速模式 / 专家模式 / 识图模式（`[role="radio"]`） | `mode` → `default` / `expert` / `vision` | 对应会话 `model_type`；别名 `fast`/`专家`/`识图` |
+| 深度思考（`.ds-toggle-button`） | `thinking` boolean | 省略则不改 `localStorage.thinkingEnabled` / 页面开关 |
+| 智能搜索（`.ds-toggle-button`） | `search` boolean | 专家模式 UI 不出现；显式 `search=true` 回 `search_not_available_in_mode` |
+| 附件胶囊 + 隐藏 `input[type=file]` | `attachVisible` 只读 | 本期不注入文件；专家模式隐藏 |
+
+`chrome.models` 来自 `localStorage.__ds_remote_feature_store_model` 的精简 `model_configs`（只留 `modelType/name/description/enabled/searchAvailable/fileAvailable`，不回巨型 `support_file_exts`）。
+
+API `create_session` / `completion` 是否带 `model_type` 尚未抓到请求体，本期仍只走 DOM。
+
 ## DOM 模式（绕开 PoW，不走 API）
 
 `/api/v0/chat/completion` 强制 `X-DS-PoW-Response`（DeepSeekHashV1 / WASM），bridge 不复刻。改让浏览器自己解：
 
 | 阶段 | 实现 | 备注 |
 |---|---|---|
+| 0. 可选切 chrome | `normalizeComposerArgs` → `assertComposerOptions` → `applyComposerChrome` | 只点已指定字段；点 radio/toggle 后等 `aria-checked` / `aria-pressed` |
 | 1. 写入 prompt | `setReactInputValue(textarea, prompt)` | React 受控输入必须走 prototype `value` setter + `input`/`change` 事件 |
-| 2. 等发送按钮 enabled | `waitFor(findComposerSendButton, ...)` | composer 行最右、enabled 的 `button.ds-icon-button--l`（实测 4 个：思考/搜索/上传/发送） |
+| 2. 等发送按钮 enabled | `waitFor(findComposerSendButton, ...)` | 优先 `.ds-button--primary.ds-button--filled.ds-button--circle`，否则 composer 行最右 enabled 的 `.ds-icon-button--l` |
 | 3. 点击 | `sendBtn.click()` | 浏览器内部触发 PoW worker → fetch `/api/v0/chat/completion` |
 | 4. 等 sessionId（仅 `/` 起始） | 轮询 `location.href.match(/\/a\/chat\/s\/([0-9a-f-]{36})/)` | SPA route 切换 |
 | 5. 等流式完成（可选） | 轮询 `/api/v0/chat/history_messages?chat_session_id=<sid>`，末条 ASSISTANT 不再 `WIP/STREAMING/PENDING` | 默认 90s 超时 |
 
+结果含 `chromeBefore` / `chromeAfter` / `applied`（实际点过的字段）。未指定控件则保持页面现状（例如已开的智能搜索会继续生效）。发送后不把模式拨回。
+
 实测耗时（2026-05）：从 `/` 创建 → sessionId < 0.5s，"ok" 级回复完成总计 3.6s；已有会话内 12 字符问题 → 完成 12s。
 
-详见 `bridges/common.js::findComposerSendButton` / `bridges/chat-bridge.js::domSendMessage`。
+详见 `lib/composerOptions.js`、`bridges/common.js::readComposerChrome` / `applyComposerChrome`、`bridges/chat-bridge.js::domSendMessage`。
 
 ---
 

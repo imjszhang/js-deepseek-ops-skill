@@ -1,6 +1,7 @@
 'use strict';
 
 const pkg = require('./package.json');
+const { createDefinitionEnvelope } = require('@js-eyes/skill-scaffold');
 const { BrowserAutomation } = require('./lib/js-eyes-client');
 const { runTool } = require('./lib/runTool');
 const { Session } = require('./lib/session');
@@ -18,6 +19,25 @@ const {
 const { ensureSkillRecordsReadme } = require('./lib/skillRecordsReadme');
 const { assertAllowedUserSettings, resolveAllowedUserSettingKeys } = require('./lib/settingsPolicy');
 const { hardenToolSchema } = require('./lib/toolSchema');
+
+const BRIDGE_CAPS = Object.freeze([
+  'browser.tabs.read',
+  'browser.page.read',
+  'browser.navigation',
+  'browser.script.execute',
+  'filesystem.skillData',
+]);
+
+function finalizeTools(tools) {
+  return tools.map((tool) => {
+    if (!tool.risk) throw new Error(`${tool.name}: missing risk (TOOL_DEFINITIONS is SSOT)`);
+    return {
+      ...tool,
+      capabilities: tool.capabilities && tool.capabilities.length ? tool.capabilities : BRIDGE_CAPS.slice(),
+      parameters: hardenToolSchema(tool.name, tool.parameters),
+    };
+  });
+}
 
 const CLI_COMMANDS = [
   { name: 'doctor', description: '连通性 + 登录态 + bridge 注入 + probe + state 汇总' },
@@ -202,14 +222,14 @@ function makeNavigateToolExecutor({ pageKey, method, toolName }) {
 // 真实数据）。如需清理测试数据，请走 DeepSeek 官方 UI 手动删除。
 // `getSessionSnapshot` bridge 方法保留供未来 export 等读路径复用。
 
-const TOOL_DEFINITIONS = [
+const TOOL_DEFINITIONS = finalizeTools([
   // ===== READ =====
   {
     name: 'deepseek_session_state',
     label: 'DeepSeek Ops: Session State',
     description: '读取当前浏览器中 DeepSeek Chat 的登录态（/api/v0/users/current）',
     parameters: { type: 'object', properties: {}, required: [] },
-    optional: true, interactive: false, destructive: false, sideEffect: null,
+    risk: 'read', optional: true, interactive: false, destructive: false, sideEffect: null,
     pageKey: 'home', method: 'sessionState',
     execute: makeReadToolExecutor({ toolName: 'deepseek_session_state', pageKey: 'home', method: 'sessionState', buildTargetUrl: () => null }),
   },
@@ -224,7 +244,7 @@ const TOOL_DEFINITIONS = [
         beforeSeqId: { type: 'string', description: '分页游标' },
       }, required: [],
     },
-    optional: true, interactive: false, destructive: false, sideEffect: null,
+    risk: 'read', optional: true, interactive: false, destructive: false, sideEffect: null,
     pageKey: 'home', method: 'listSessions',
     execute: makeReadToolExecutor({ toolName: 'deepseek_list_sessions', pageKey: 'home', method: 'listSessions', buildTargetUrl: () => targets.homeUrl() }),
   },
@@ -240,7 +260,7 @@ const TOOL_DEFINITIONS = [
         truncLen: { type: 'number' }, contentMaxLen: { type: 'number' },
       }, required: ['sessionId'],
     },
-    optional: true, interactive: false, destructive: false, sideEffect: null,
+    risk: 'read', optional: true, interactive: false, destructive: false, sideEffect: null,
     pageKey: 'chat', method: 'getSession',
     execute(runtime, params, context = {}) {
       const p = params || {};
@@ -261,9 +281,9 @@ const TOOL_DEFINITIONS = [
   {
     name: 'deepseek_chat_page_state',
     label: 'DeepSeek Ops: Chat Page State',
-    description: '读取当前 chat 页 UI 状态快照（composer 草稿仅出 length+sha256）',
+    description: '读取当前 chat 页 UI 状态快照（composer 草稿仅出 length+sha256；另含模式/思考/搜索/附件 chrome）',
     parameters: { type: 'object', properties: {}, required: [] },
-    optional: true, interactive: false, destructive: false, sideEffect: null,
+    risk: 'read', optional: true, interactive: false, destructive: false, sideEffect: null,
     pageKey: 'chat', method: 'chatPageState',
     execute: makeReadToolExecutor({ toolName: 'deepseek_chat_page_state', pageKey: 'chat', method: 'chatPageState', buildTargetUrl: () => null }),
   },
@@ -276,7 +296,7 @@ const TOOL_DEFINITIONS = [
       properties: { sessionId: { type: 'string' }, limit: { type: 'number' }, contentMaxLen: { type: 'number' } },
       required: ['sessionId'],
     },
-    optional: true, interactive: false, destructive: false, sideEffect: null,
+    risk: 'read', optional: true, interactive: false, destructive: false, sideEffect: null,
     pageKey: 'chat', method: 'listMessages',
     execute(runtime, params, context = {}) {
       const p = params || {};
@@ -307,7 +327,7 @@ const TOOL_DEFINITIONS = [
       },
       required: ['sessionId', 'messageId'],
     },
-    optional: true, interactive: false, destructive: false, sideEffect: null,
+    risk: 'read', optional: true, interactive: false, destructive: false, sideEffect: null,
     pageKey: 'chat', method: 'getMessage',
     execute(runtime, params, context = {}) {
       const p = params || {};
@@ -340,7 +360,7 @@ const TOOL_DEFINITIONS = [
       },
       required: ['sessionId'],
     },
-    optional: true, interactive: false, destructive: false, sideEffect: null,
+    risk: 'read', optional: true, interactive: false, destructive: false, sideEffect: null,
     pageKey: 'chat', method: 'getSessionTree',
     execute(runtime, params, context = {}) {
       const p = params || {};
@@ -367,7 +387,7 @@ const TOOL_DEFINITIONS = [
       properties: { sessionId: { type: 'string' } },
       required: ['sessionId'],
     },
-    optional: true, interactive: false, destructive: false, sideEffect: null,
+    risk: 'read', optional: true, interactive: false, destructive: false, sideEffect: null,
     pageKey: 'chat', method: 'listBranchPoints',
     execute(runtime, params, context = {}) {
       const p = params || {};
@@ -401,7 +421,7 @@ const TOOL_DEFINITIONS = [
       },
       required: ['sessionId'],
     },
-    optional: true, interactive: false, destructive: false, sideEffect: null,
+    risk: 'read', optional: true, interactive: false, destructive: false, sideEffect: null,
     pageKey: 'chat', method: 'getBranchPath',
     execute(runtime, params, context = {}) {
       const p = params || {};
@@ -424,7 +444,7 @@ const TOOL_DEFINITIONS = [
     label: 'DeepSeek Ops: Streaming Status',
     description: '一次性观察 chat 页 streaming 状态（不订阅 SSE）',
     parameters: { type: 'object', properties: { sessionId: { type: 'string' } }, required: [] },
-    optional: true, interactive: false, destructive: false, sideEffect: null,
+    risk: 'read', optional: true, interactive: false, destructive: false, sideEffect: null,
     pageKey: 'chat', method: 'streamingStatus',
     execute: makeReadToolExecutor({ toolName: 'deepseek_streaming_status', pageKey: 'chat', method: 'streamingStatus', buildTargetUrl: (p) => p.sessionId ? targets.chatSessionUrl({ sessionId: p.sessionId }) : null }),
   },
@@ -433,7 +453,7 @@ const TOOL_DEFINITIONS = [
     label: 'DeepSeek Ops: Chat Settings View',
     description: '只读 /api/v0/client/settings（model 列表 / feature flags）',
     parameters: { type: 'object', properties: { scope: { type: 'string', enum: ['main', 'model'], default: 'main' } }, required: [] },
-    optional: true, interactive: false, destructive: false, sideEffect: null,
+    risk: 'read', optional: true, interactive: false, destructive: false, sideEffect: null,
     pageKey: 'chat', method: 'chatSettingsView',
     execute: makeReadToolExecutor({ toolName: 'deepseek_chat_settings_view', pageKey: 'chat', method: 'chatSettingsView', buildTargetUrl: () => null }),
   },
@@ -442,7 +462,7 @@ const TOOL_DEFINITIONS = [
     label: 'DeepSeek Ops: List Files',
     description: '列出当前账号上传的文件',
     parameters: { type: 'object', properties: { sessionId: { type: 'string' } }, required: [] },
-    optional: true, interactive: false, destructive: false, sideEffect: null,
+    risk: 'read', optional: true, interactive: false, destructive: false, sideEffect: null,
     pageKey: 'chat', method: 'listFiles',
     execute: makeReadToolExecutor({ toolName: 'deepseek_list_files', pageKey: 'chat', method: 'listFiles', buildTargetUrl: () => null }),
   },
@@ -451,7 +471,7 @@ const TOOL_DEFINITIONS = [
     label: 'DeepSeek Ops: List Shares',
     description: '列出当前账号的分享链接',
     parameters: { type: 'object', properties: {}, required: [] },
-    optional: true, interactive: false, destructive: false, sideEffect: null,
+    risk: 'read', optional: true, interactive: false, destructive: false, sideEffect: null,
     pageKey: 'home', method: 'listShares',
     execute: makeReadToolExecutor({ toolName: 'deepseek_list_shares', pageKey: 'home', method: 'listShares', buildTargetUrl: () => null }),
   },
@@ -462,7 +482,7 @@ const TOOL_DEFINITIONS = [
     label: 'DeepSeek Ops: Navigate To Home',
     description: '把浏览器导航到 / （仅 location.assign）',
     parameters: { type: 'object', properties: {}, required: [] },
-    optional: true, interactive: true, destructive: false, sideEffect: null,
+    risk: 'interactive', optional: true, interactive: true, destructive: false, sideEffect: null,
     pageKey: 'home', method: 'navigateHome',
     execute: makeNavigateToolExecutor({ toolName: 'deepseek_navigate_home', pageKey: 'home', method: 'navigateHome' }),
   },
@@ -471,7 +491,7 @@ const TOOL_DEFINITIONS = [
     label: 'DeepSeek Ops: Navigate To Session',
     description: '把浏览器导航到 /a/chat/s/<id> （仅 location.assign）',
     parameters: { type: 'object', properties: { sessionId: { type: 'string' }, url: { type: 'string' } }, required: [] },
-    optional: true, interactive: true, destructive: false, sideEffect: null,
+    risk: 'interactive', optional: true, interactive: true, destructive: false, sideEffect: null,
     pageKey: 'chat', method: 'navigateSession',
     execute: makeNavigateToolExecutor({ toolName: 'deepseek_navigate_session', pageKey: 'chat', method: 'navigateSession' }),
   },
@@ -480,7 +500,7 @@ const TOOL_DEFINITIONS = [
     label: 'DeepSeek Ops: Navigate To New Chat',
     description: '导航到 / 起新对话',
     parameters: { type: 'object', properties: {}, required: [] },
-    optional: true, interactive: true, destructive: false, sideEffect: null,
+    risk: 'interactive', optional: true, interactive: true, destructive: false, sideEffect: null,
     pageKey: 'home', method: 'navigateNewChat',
     execute: makeNavigateToolExecutor({ toolName: 'deepseek_navigate_new_chat', pageKey: 'home', method: 'navigateNewChat' }),
   },
@@ -491,7 +511,7 @@ const TOOL_DEFINITIONS = [
     label: 'DeepSeek Ops: Create Session',
     description: '[DESTRUCTIVE,reversible] 创建新会话；返回 sessionId 用于后续 send_message 等',
     parameters: { type: 'object', properties: { agent: { type: 'string', description: 'default: chat' }, character_id: { type: 'string' } }, required: [] },
-    optional: true, interactive: false, destructive: true, sideEffect: 'reversible',
+    risk: 'destructive', optional: true, interactive: false, destructive: true, sideEffect: 'reversible',
     pageKey: 'home', method: 'createSession',
     execute: makeDestructiveExecutor({ toolName: 'deepseek_create_session', pageKey: 'home', method: 'createSession', sideEffect: 'reversible', buildTargetUrl: () => null }),
   },
@@ -500,7 +520,7 @@ const TOOL_DEFINITIONS = [
     label: 'DeepSeek Ops: Rename Session',
     description: '[DESTRUCTIVE,reversible] 重命名会话标题（最大 200 字）',
     parameters: { type: 'object', properties: { sessionId: { type: 'string' }, title: { type: 'string' } }, required: ['sessionId', 'title'] },
-    optional: true, interactive: false, destructive: true, sideEffect: 'reversible',
+    risk: 'destructive', optional: true, interactive: false, destructive: true, sideEffect: 'reversible',
     pageKey: 'home', method: 'renameSession',
     execute: makeDestructiveExecutor({ toolName: 'deepseek_rename_session', pageKey: 'home', method: 'renameSession', sideEffect: 'reversible', buildTargetUrl: () => null }),
   },
@@ -509,7 +529,7 @@ const TOOL_DEFINITIONS = [
     label: 'DeepSeek Ops: Pin Session',
     description: '[DESTRUCTIVE,reversible] 把会话置顶',
     parameters: { type: 'object', properties: { sessionId: { type: 'string' } }, required: ['sessionId'] },
-    optional: true, interactive: false, destructive: true, sideEffect: 'reversible',
+    risk: 'destructive', optional: true, interactive: false, destructive: true, sideEffect: 'reversible',
     pageKey: 'home', method: 'pinSession',
     execute: makeDestructiveExecutor({ toolName: 'deepseek_pin_session', pageKey: 'home', method: 'pinSession', sideEffect: 'reversible', buildTargetUrl: () => null }),
   },
@@ -518,7 +538,7 @@ const TOOL_DEFINITIONS = [
     label: 'DeepSeek Ops: Unpin Session',
     description: '[DESTRUCTIVE,reversible] 取消会话置顶',
     parameters: { type: 'object', properties: { sessionId: { type: 'string' } }, required: ['sessionId'] },
-    optional: true, interactive: false, destructive: true, sideEffect: 'reversible',
+    risk: 'destructive', optional: true, interactive: false, destructive: true, sideEffect: 'reversible',
     pageKey: 'home', method: 'unpinSession',
     execute: makeDestructiveExecutor({ toolName: 'deepseek_unpin_session', pageKey: 'home', method: 'unpinSession', sideEffect: 'reversible', buildTargetUrl: () => null }),
   },
@@ -540,7 +560,7 @@ const TOOL_DEFINITIONS = [
       },
       required: ['sessionId', 'messageId', 'feedback'],
     },
-    optional: true, interactive: false, destructive: true, sideEffect: 'reversible',
+    risk: 'destructive', optional: true, interactive: false, destructive: true, sideEffect: 'reversible',
     pageKey: 'chat', method: 'feedbackMessage',
     execute: makeDestructiveExecutor({
       toolName: 'deepseek_feedback_message', pageKey: 'chat', method: 'feedbackMessage',
@@ -552,7 +572,7 @@ const TOOL_DEFINITIONS = [
     label: 'DeepSeek Ops: Stop Stream',
     description: '[DESTRUCTIVE,reversible] 停止当前会话的流式生成',
     parameters: { type: 'object', properties: { sessionId: { type: 'string' } }, required: ['sessionId'] },
-    optional: true, interactive: false, destructive: true, sideEffect: 'reversible',
+    risk: 'destructive', optional: true, interactive: false, destructive: true, sideEffect: 'reversible',
     pageKey: 'chat', method: 'stopStream',
     execute: makeDestructiveExecutor({
       toolName: 'deepseek_stop_stream', pageKey: 'chat', method: 'stopStream',
@@ -579,7 +599,7 @@ const TOOL_DEFINITIONS = [
       },
       required: ['sessionId', 'prompt'],
     },
-    optional: true, interactive: false, destructive: true, sideEffect: 'cost',
+    risk: 'destructive', optional: true, interactive: false, destructive: true, sideEffect: 'cost',
     pageKey: 'chat', method: 'sendMessage',
     execute: makeDestructiveExecutor({
       toolName: 'deepseek_send_message', pageKey: 'chat', method: 'sendMessage',
@@ -600,7 +620,7 @@ const TOOL_DEFINITIONS = [
       },
       required: ['sessionId', 'messageId', 'prompt'],
     },
-    optional: true, interactive: false, destructive: true, sideEffect: 'cost',
+    risk: 'destructive', optional: true, interactive: false, destructive: true, sideEffect: 'cost',
     pageKey: 'chat', method: 'editMessage',
     execute: makeDestructiveExecutor({
       toolName: 'deepseek_edit_message', pageKey: 'chat', method: 'editMessage',
@@ -620,7 +640,7 @@ const TOOL_DEFINITIONS = [
       },
       required: ['sessionId', 'parentMessageId'],
     },
-    optional: true, interactive: false, destructive: true, sideEffect: 'cost',
+    risk: 'destructive', optional: true, interactive: false, destructive: true, sideEffect: 'cost',
     pageKey: 'chat', method: 'regenerateMessage',
     execute: makeDestructiveExecutor({
       toolName: 'deepseek_regenerate_message', pageKey: 'chat', method: 'regenerateMessage',
@@ -636,18 +656,21 @@ const TOOL_DEFINITIONS = [
   {
     name: 'deepseek_dom_send_message',
     label: 'DeepSeek Ops: Send Message via UI (DOM)',
-    description: '[DESTRUCTIVE,COST] DOM 模式：在 composer 输入并点击发送。在 / 上自动创建可见会话；在已有会话页则追加发言。绕开 bridge PoW 限制。',
+    description: '[DESTRUCTIVE,COST] DOM 模式：可选先切快速/专家/识图与深度思考/智能搜索，再在 composer 输入并点击发送。未指定控件则保持页面现状。在 / 上自动创建可见会话；在已有会话页则追加发言。',
     parameters: {
       type: 'object',
       properties: {
         prompt: { type: 'string', description: '要发送的消息文本' },
+        mode: { type: 'string', enum: ['default', 'expert', 'vision'], description: '新对话模式：快速/专家/识图；省略则不改页面当前模式' },
+        thinking: { type: 'boolean', description: '是否打开深度思考；省略则不改页面当前开关' },
+        search: { type: 'boolean', description: '是否打开智能搜索；省略则不改。专家模式显式 true 会失败' },
         waitForFinish: { type: 'boolean', default: true, description: '是否轮询 history_messages 直到末条 ASSISTANT 不再 STREAMING/WIP' },
         sessionIdTimeoutMs: { type: 'number', description: '从 / 创建后等待 sessionId 出现的超时；默认 20000' },
         finishTimeoutMs: { type: 'number', description: '等流式结束的超时；默认 90000' },
       },
       required: ['prompt'],
     },
-    optional: true, interactive: false, destructive: true, sideEffect: 'cost',
+    risk: 'destructive', optional: true, interactive: false, destructive: true, sideEffect: 'cost',
     pageKey: 'chat', method: 'domSendMessage',
     execute: makeDestructiveExecutor({
       toolName: 'deepseek_dom_send_message', pageKey: 'chat', method: 'domSendMessage',
@@ -669,7 +692,7 @@ const TOOL_DEFINITIONS = [
       },
       required: ['prompt'],
     },
-    optional: true, interactive: false, destructive: true, sideEffect: 'cost',
+    risk: 'destructive', optional: true, interactive: false, destructive: true, sideEffect: 'cost',
     pageKey: 'chat', method: 'domEditMessage',
     execute: makeDestructiveExecutor({
       toolName: 'deepseek_dom_edit_message', pageKey: 'chat', method: 'domEditMessage',
@@ -689,7 +712,7 @@ const TOOL_DEFINITIONS = [
         finishTimeoutMs: { type: 'number' },
       },
     },
-    optional: true, interactive: false, destructive: true, sideEffect: 'cost',
+    risk: 'destructive', optional: true, interactive: false, destructive: true, sideEffect: 'cost',
     pageKey: 'chat', method: 'domRegenerateMessage',
     execute: makeDestructiveExecutor({
       toolName: 'deepseek_dom_regenerate_message', pageKey: 'chat', method: 'domRegenerateMessage',
@@ -701,7 +724,7 @@ const TOOL_DEFINITIONS = [
     label: 'DeepSeek Ops: Stop Stream via UI (DOM)',
     description: '[DESTRUCTIVE,reversible] DOM 模式：在流式中点击停止按钮。需在 chat 页且当前正在流式。',
     parameters: { type: 'object', properties: {} },
-    optional: true, interactive: false, destructive: true, sideEffect: 'reversible',
+    risk: 'destructive', optional: true, interactive: false, destructive: true, sideEffect: 'reversible',
     pageKey: 'chat', method: 'domStopStream',
     execute: makeDestructiveExecutor({
       toolName: 'deepseek_dom_stop_stream', pageKey: 'chat', method: 'domStopStream',
@@ -723,7 +746,7 @@ const TOOL_DEFINITIONS = [
       },
       required: ['filename', 'contentBase64'],
     },
-    optional: true, interactive: false, destructive: true, sideEffect: 'reversible',
+    risk: 'destructive', optional: true, interactive: false, destructive: true, sideEffect: 'reversible',
     pageKey: 'chat', method: 'uploadFile',
     execute: makeDestructiveExecutor({ toolName: 'deepseek_upload_file', pageKey: 'chat', method: 'uploadFile', sideEffect: 'reversible', buildTargetUrl: () => null }),
   },
@@ -732,7 +755,7 @@ const TOOL_DEFINITIONS = [
     label: 'DeepSeek Ops: Share Session',
     description: '[DESTRUCTIVE,reversible] 创建会话分享链接',
     parameters: { type: 'object', properties: { sessionId: { type: 'string' }, title: { type: 'string' }, message_ids: { type: 'array', items: { type: 'number' } } }, required: ['sessionId'] },
-    optional: true, interactive: false, destructive: true, sideEffect: 'reversible',
+    risk: 'destructive', optional: true, interactive: false, destructive: true, sideEffect: 'reversible',
     pageKey: 'home', method: 'shareSession',
     execute: makeDestructiveExecutor({ toolName: 'deepseek_share_session', pageKey: 'home', method: 'shareSession', sideEffect: 'reversible', buildTargetUrl: () => null }),
   },
@@ -741,7 +764,7 @@ const TOOL_DEFINITIONS = [
     label: 'DeepSeek Ops: Unshare Session',
     description: '[DESTRUCTIVE,IRREVERSIBLE] 删除分享链接',
     parameters: { type: 'object', properties: { shareId: { type: 'string' } }, required: ['shareId'] },
-    optional: true, interactive: false, destructive: true, sideEffect: 'irreversible',
+    risk: 'destructive', optional: true, interactive: false, destructive: true, sideEffect: 'irreversible',
     pageKey: 'home', method: 'unshareSession',
     execute: makeDestructiveExecutor({
       toolName: 'deepseek_unshare_session', pageKey: 'home', method: 'unshareSession',
@@ -753,7 +776,7 @@ const TOOL_DEFINITIONS = [
     label: 'DeepSeek Ops: Update User Settings',
     description: '[DESTRUCTIVE,reversible] 更新账号设置（settings 字段透传给 /api/v0/users/update_settings）',
     parameters: { type: 'object', properties: { settings: { type: 'object' } }, required: ['settings'] },
-    optional: true, interactive: false, destructive: true, sideEffect: 'reversible',
+    risk: 'administrative', optional: true, interactive: false, destructive: true, sideEffect: 'reversible',
     pageKey: 'home', method: 'updateUserSettings',
     async execute(runtime, params, context = {}) {
       assertAllowedUserSettings(params?.settings, runtime.config);
@@ -763,50 +786,36 @@ const TOOL_DEFINITIONS = [
       })(runtime, params, context);
     },
   },
-];
+]);
 
-function projectTool(tool) {
-  return {
-    name: tool.name,
-    label: tool.label,
-    description: tool.description,
-    parameters: hardenToolSchema(tool.name, tool.parameters),
-    optional: tool.optional === true,
-    interactive: tool.interactive === true,
-    destructive: tool.destructive === true,
-    sideEffect: tool.sideEffect || null,
-  };
-}
-
-function createOpenClawAdapter(config = {}, logger) {
-  const runtime = createRuntime(config, logger);
-  return {
-    runtime,
-    tools: TOOL_DEFINITIONS.map((tool) => Object.assign(projectTool(tool), {
-      async execute(toolCallId, params) {
-        const result = await tool.execute(runtime, params, { toolCallId });
-        return runtime.jsonResult(result);
-      },
-    })),
-  };
-}
-
-module.exports = {
-  id: pkg.name,
-  name: 'JS DeepSeek Ops Skill',
-  version: pkg.version,
-  description: pkg.description,
+module.exports = createDefinitionEnvelope({
+  pkg,
+  displayName: 'JS DeepSeek Ops Skill',
+  capabilities: {
+    browser: ['tabs.read', 'page.read', 'navigation', 'script.execute'],
+    network: { direct: false, hosts: [] },
+    filesystem: ['skillData'],
+    process: [],
+    secrets: [],
+    background: false,
+  },
+  requirements: {
+    server: true,
+    browserExtension: true,
+    login: true,
+    platforms: ['chat.deepseek.com'],
+  },
   runtime: {
     requiresServer: true,
     requiresBrowserExtension: true,
     platforms: ['chat.deepseek.com'],
     pageProfiles: Object.keys(PAGE_PROFILES),
   },
+  tools: TOOL_DEFINITIONS,
   cli: { entry: './cli/index.js', commands: CLI_COMMANDS },
-  openclaw: { tools: TOOL_DEFINITIONS.map(projectTool) },
-  createRuntime,
-  createOpenClawAdapter,
-  projectTool,
-  prefetchShareBackup,
-  TOOL_DEFINITIONS,
-};
+  extra: {
+    publisher: 'imjszhang',
+    createRuntime,
+    prefetchShareBackup,
+  },
+});

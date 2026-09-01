@@ -17,8 +17,9 @@
 
 (function install() {
   'use strict';
-  const VERSION = '0.3.4';
+  const VERSION = '0.3.6';
 
+  // @@include ../lib/composerOptions.js
   // @@include ./common.js
 
   const DEFAULT_LIST_LIMIT = 25;
@@ -202,6 +203,22 @@
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const beforeUrl = location.href;
 
+    const parsed = normalizeComposerArgs(args);
+    if (!parsed.ok) return errResult(parsed.error, { raw: parsed.raw });
+    const asserted = assertComposerOptions(parsed.value);
+    if (!asserted.ok) return errResult(asserted.error, { mode: asserted.mode });
+
+    let chromeBefore = null;
+    let chromeAfter = null;
+    let applied = {};
+    if (hasComposerApply(parsed.value)) {
+      const appliedRes = await applyComposerChrome(parsed.value);
+      if (!appliedRes.ok) return appliedRes;
+      chromeBefore = appliedRes.chromeBefore || null;
+      chromeAfter = appliedRes.chrome || null;
+      applied = appliedRes.applied || {};
+    }
+
     const ta = document.querySelector('textarea');
     if (!ta) return errResult('no_composer_textarea', { url: beforeUrl });
 
@@ -254,6 +271,9 @@
       promptLength: prompt.length, promptPreview: prompt.slice(0, 80),
       waitedFinish, finishElapsedMs,
       messageCount, lastMessage,
+      chromeBefore,
+      chromeAfter: chromeAfter || readComposerChrome(),
+      applied,
       timestamp: new Date().toISOString(),
     });
   }

@@ -6,23 +6,35 @@ const assert = require('node:assert/strict');
 const pkg = require('../package.json');
 const manifest = require('../skill.manifest.json');
 const entry = require('../skill.entry');
-const contract = require('../skill.contract');
+const definition = require('../skill.definition');
 
-test('V2 manifest 与 contract/entry 保持一一对应', () => {
+test('V2 manifest 与 definition/entry 保持一一对应', () => {
   assert.equal(manifest.manifestVersion, 2);
   assert.equal(manifest.id, pkg.name);
   assert.equal(manifest.version, pkg.version);
   assert.equal(manifest.entry, './skill.entry.js');
+  assert.equal(manifest.publisher, 'imjszhang');
   assert.equal(manifest.tools.length, 33);
   assert.equal(new Set(manifest.tools.map((tool) => tool.name)).size, manifest.tools.length);
   assert.deepEqual(
     manifest.tools.map((tool) => tool.name),
-    contract.TOOL_DEFINITIONS.map((tool) => tool.name),
+    definition.TOOL_DEFINITIONS.map((tool) => tool.name),
   );
   assert.deepEqual(Object.keys(entry.handlers), manifest.tools.map((tool) => tool.name));
 });
 
+test('TOOL_DEFINITIONS 是 risk / capabilities 的 SSOT', () => {
+  assert.equal(typeof definition.createOpenClawAdapter, 'undefined');
+  assert.equal(definition.publisher, 'imjszhang');
+  for (const tool of definition.TOOL_DEFINITIONS) {
+    assert.ok(tool.risk, tool.name);
+    assert.ok(Array.isArray(tool.capabilities) && tool.capabilities.length > 0, tool.name);
+    assert.ok(tool.capabilities.includes('browser.script.execute'), tool.name);
+  }
+});
+
 test('V2 manifest 声明最小能力、风险和闭合输入 schema', () => {
+  assert.ok(manifest.capabilities.browser.includes('page.read'));
   assert.deepEqual(manifest.capabilities.network, { direct: false, hosts: [] });
   assert.deepEqual(manifest.capabilities.process, []);
   assert.deepEqual(manifest.capabilities.secrets, []);
@@ -34,7 +46,18 @@ test('V2 manifest 声明最小能力、风险和闭合输入 schema', () => {
   for (const tool of manifest.tools) {
     assert.equal(tool.inputSchema.additionalProperties, false, tool.name);
     assert.ok(tool.capabilities.includes('browser.script.execute'), tool.name);
+    assert.ok(tool.capabilities.includes('browser.page.read'), tool.name);
   }
+});
+
+test('dom_send_message schema 含 mode/thinking/search 且闭合', () => {
+  const tool = manifest.tools.find((t) => t.name === 'deepseek_dom_send_message');
+  assert.ok(tool);
+  assert.equal(tool.inputSchema.additionalProperties, false);
+  assert.deepEqual(tool.inputSchema.properties.mode.enum, ['default', 'expert', 'vision']);
+  assert.equal(tool.inputSchema.properties.thinking.type, 'boolean');
+  assert.equal(tool.inputSchema.properties.search.type, 'boolean');
+  assert.ok(tool.inputSchema.properties.prompt);
 });
 
 test('浏览器客户端只复用官方共享 SDK', () => {

@@ -17,7 +17,7 @@ const {
 const { formatAsMermaid, formatAsAscii } = require('../lib/treeFormat');
 const { ensureSkillRecordsReadme } = require('../lib/skillRecordsReadme');
 const { assertAllowedUserSettings } = require('../lib/settingsPolicy');
-const { prefetchShareBackup } = require('../skill.contract');
+const { prefetchShareBackup } = require('../skill.definition');
 const fs = require('fs');
 
 function writePrivateFile(filePath, contents) {

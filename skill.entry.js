@@ -1,7 +1,8 @@
 'use strict';
 
 const path = require('path');
-const { TOOL_DEFINITIONS, createRuntime } = require('./skill.contract');
+const { createNativeHandlers } = require('@js-eyes/skill-scaffold');
+const { TOOL_DEFINITIONS, createRuntime } = require('./skill.definition');
 
 function bridgeRuntime(context) {
   const skillDataRoot = context.storage?.root || null;
@@ -22,15 +23,18 @@ function bridgeRuntime(context) {
   });
 }
 
-module.exports = {
-  bridgeRuntime,
-  handlers: Object.fromEntries(TOOL_DEFINITIONS.map((tool) => [
-    tool.name,
-    async (context, input) => tool.execute(bridgeRuntime(context), input || {}, {
-      toolCallId: context.toolCallId,
-      invocationId: context.invocationId,
-      signal: context.signal,
-      source: context.source,
-    }),
-  ])),
-};
+const rawHandlers = createNativeHandlers(TOOL_DEFINITIONS);
+const handlers = Object.fromEntries(Object.entries(rawHandlers).map(([name, handler]) => [
+  name,
+  (context, input) => {
+    const runtime = bridgeRuntime(context);
+    return handler({
+      ...context,
+      config: runtime.config,
+      logger: runtime.logger,
+      browser: context.browser,
+    }, input);
+  },
+]));
+
+module.exports = { bridgeRuntime, handlers };

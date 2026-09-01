@@ -1,7 +1,7 @@
 ---
 name: js-deepseek-ops-skill
 description: DeepSeek Chat 全量自动化 skill：READ + INTERACTIVE + DESTRUCTIVE 三档；登录态 / 历史会话 / 单会话历史 / chat 页深度只读 + 创建/重命名/置顶 / 反馈 / 上传 / 分享 / 账号设置 / DOM 模式发/编辑/重生消息（绕开 PoW）。所有 destructive 调用强制写 audit.jsonl，irreversible 调用前自动 backup。**v0.3.3 起不再暴露删除会话工具**（不可逆且无可靠补偿，请走官方 UI）。
-version: 0.5.0
+version: 0.7.0
 metadata:
   openclaw:
     emoji: "\U0001F9E0"
@@ -19,7 +19,8 @@ metadata:
 
 面向 `chat.deepseek.com` 的**全量自动化** skill，对标 [`js-reddit-ops-skill`](../js-reddit-ops-skill/SKILL.md) 的 `PAGE_PROFILES + Bridges + Session` 架构。
 
-当前版本同时支持旧 contract 和 Skill Runtime V2。V2 入口是静态
+当前版本对齐 js-eyes 2.10.0 官方 skill 形状（`skill.definition.js` SSOT +
+`@js-eyes/skill-scaffold`），宿主下限仍是 JS Eyes 2.8.5+。V2 入口是静态
 `skill.manifest.json` + `skill.entry.js`，外部 skill 可由宿主在隔离 Worker 中加载。
 
 - V2 经 OpenClaw 调用时，`destructive` / `administrative` 工具由宿主执行一次性 consent；只有宿主策略显式放行时才跳过确认
@@ -30,7 +31,7 @@ metadata:
 
 ## 依赖与前置
 
-- **JS Eyes Server** 已启动（`js-eyes server start`）
+- **JS Eyes Server** 已启动（`js-eyes server start`）；宿主 2.8.5+，本 skill 已对齐 2.10.0 scaffold
 - **浏览器扩展**已安装并连上 server
 - **登录态**：浏览器里已人工登录 `chat.deepseek.com`；`localStorage.userToken` 必须有效
 - **任意 chat.deepseek.com tab 即可**：所有工具默认 `navigateOnReuse=false / reuseAnyDeepseekTab=true`，bridge 在任意 chat.deepseek.com tab 里 fetch 同源 JSON 端点
@@ -101,7 +102,7 @@ branch-manager 的 scan 默认 `redact=off`，需要正文时必须显式指定 
 | `deepseek_get_session_tree` | **v0.4.0** 会话全分支树（nodes map + activePathIds + branchPointIds + stats） |
 | `deepseek_list_branch_points` | **v0.4.0** 仅分支点 + children 摘要（轻量发现，永不带正文） |
 | `deepseek_get_branch_path` | **v0.4.0** 从指定 leaf 反推 root 的线性路径（默认 leaf=current；schema 兼容 get_session） |
-| `deepseek_chat_page_state` | 当前 chat 页 UI 状态（composer 仅 sha256） |
+| `deepseek_chat_page_state` | 当前 chat 页 UI 状态（composer 仅 sha256；含模式/思考/搜索/附件 `chrome`） |
 | `deepseek_list_messages` | 消息元数据（永不出正文） |
 | `deepseek_get_message` | 单条消息详情（默认 redact off） |
 | `deepseek_streaming_status` | 是否在流式（一次性观察，不订阅 SSE） |
@@ -129,7 +130,7 @@ branch-manager 的 scan 默认 `redact=off`，需要正文时必须显式指定 
 | `deepseek_send_message` | **cost** | 发消息（PoW 必需，**bridge 不实现 wasm solver，会回 `pow_required`** — 改用下面 DOM 版） |
 | `deepseek_edit_message` | cost | 编辑用户消息并重生（同上 PoW 限制） |
 | `deepseek_regenerate_message` | cost | 基于 parent 重生 assistant（同上 PoW 限制） |
-| `deepseek_dom_send_message` | **cost** | **DOM 模式发消息**：在 composer 输入并点击发送，绕开 PoW；在 `/` 自动创建可见会话 |
+| `deepseek_dom_send_message` | **cost** | **DOM 模式发消息**：可选 `mode`/`thinking`/`search`，未指定则保持页面现状；在 `/` 自动创建可见会话 |
 | `deepseek_dom_edit_message` | **cost** | **DOM 模式编辑**：USER 消息本身是 inline textarea，直接 setReactInputValue + 点击"发送"。target=`lastUser` |
 | `deepseek_dom_regenerate_message` | **cost** | **DOM 模式重生**：定位 ASSISTANT 行 action 按钮组中的"重新生成"。target=`lastAssistant` |
 | `deepseek_dom_stop_stream` | reversible | DOM 模式停止流（点击 composer 行最右按钮） |
@@ -145,7 +146,9 @@ branch-manager 的 scan 默认 `redact=off`，需要正文时必须显式指定 
   - 未来 1：在 bridge 端 fetch wasm 并实例化（待研究）
   - 未来 2：hook DeepSeek 自带的 `useProofOfWorkStore` zustand store，复用其缓存的 `pair.answer`
 - **DOM 选择器易碎**（关键定位逻辑见 `bridges/common.js`）：
-  - `findComposerSendButton`：composer 行 `.ds-icon-button--l` 最右、enabled
+  - `findComposerSendButton`：优先 `.ds-button--primary.ds-button--filled.ds-button--circle`，否则 composer 行 `.ds-icon-button--l` 最右、enabled
+  - 模式单选：`[role="radio"]` 文案「快速模式 / 专家模式 / 识图模式」
+  - 开关：`.ds-toggle-button` 文案「深度思考 / 智能搜索」（专家模式无搜索开关；显式 `search=true` 会失败）
   - `findMessageActionRows`：`.ds-icon-button--m` 按 y 聚类，2 个=USER、≥4 个=ASSISTANT
   - `domEditMessage` 直接定位 last user `<textarea>`（非 readonly + 非空），改值后 DeepSeek 自动渲染"发送"按钮
 - **target 选择**：`dom_edit_message` / `dom_regenerate_message` 支持 `target=lastUser`/`lastAssistant`（默认）和 `target=byMessageId` + `messageId`。后者通过 `_locateMessageInVirtualList` 滚动虚拟列表 + 内容指纹定位历史消息（见 `bridges/chat-bridge.js` 同名函数）。**注意**：DeepSeek 编辑会创建新分支，已被替换的旧分支消息不在 UI 中渲染，对其调用会返回 `message_not_in_current_branch_or_dom` + 友好 hint
@@ -189,8 +192,12 @@ node index.js edit-message <sid> 5 "改后内容"
 node index.js regenerate-message <sid> 4
 
 # DESTRUCTIVE（cost，DOM 模式 — 推荐，绕开 PoW）
-node index.js navigate-home && node index.js dom-send-message "新会话第一条"   # 自动创建可见会话
+node index.js chat-page-state                                                    # 含 chrome：mode / thinking / search / attach
+node index.js navigate-home && node index.js dom-send-message "新会话第一条"   # 自动创建可见会话；未指定控件则不改页面
 node index.js dom-send-message "在当前会话追问"                                  # 当前 chat 页追加
+node index.js dom-send-message "..." --mode expert --no-wait                     # 先切专家模式再发
+node index.js dom-send-message "..." --thinking --search                         # 显式打开深度思考 + 智能搜索
+node index.js dom-send-message "..." --no-thinking --no-search                   # 显式关掉（省略 flag 不会关）
 node index.js dom-send-message "..." --no-wait                                   # 不等流式结束
 node index.js dom-edit-message "改写后的 user 内容" --session <sid>              # 编辑最后 user 消息并重生
 node index.js dom-edit-message "改写..." --session <sid> --message-id 7          # 编辑历史 user 消息（自动滚虚拟列表定位）
@@ -209,16 +216,16 @@ node index.js xhr-log --filter "/api/v0/" --limit 200
 ## 架构
 
 ```
-┌─ skill.manifest.json ─ V2 静态描述（风险、schema、最小能力）
-├─ skill.entry.js ─────── V2 Worker 入口（33 个 handler）
-├─ skill.contract.js ──── TOOL_DEFINITIONS 单一业务定义（33 个）
+┌─ skill.manifest.json ─ V2 静态描述（由 scaffold 从 definition 生成）
+├─ skill.entry.js ─────── V2 Worker 入口（createNativeHandlers + storage 桥接）
+├─ skill.definition.js ── TOOL_DEFINITIONS 单一业务定义（risk / capabilities / schema）
 │
 ├─ lib/
 │   ├─ runTool.js          ← READ + 写操作双分支（audit + irreversible 强制 backup）
 │   ├─ audit.js            ← 默认脱敏、0600 的 audit / backup
 │   ├─ redact.js            ← redact policy（off/trunc/full + sha256 摘要）
 │   ├─ settingsPolicy.js    ← 账号设置字段 allowlist（默认拒绝）
-│   ├─ toolSchema.js        ← V1/V2 共用的闭合输入 schema
+│   ├─ toolSchema.js        ← 闭合输入 schema（definition 导出前硬化）
 │   ├─ session.js           ← bridge 注入 / callApi / callRaw / awaitBridgeAfterNav
 │   ├─ commands.js          ← CLI 命令注册（含 destructive kind）
 │   └─ ...
@@ -238,7 +245,7 @@ LLM tool call
   ↓
 V2 host risk gate（destructive / administrative 一次性 consent）
   ↓
-skill.entry.js → skill.contract.js (destructive=true, sideEffect=...)
+skill.entry.js → skill.definition.js (risk + sideEffect=...)
   ↓
 lib/runTool.js 写操作分支
   ↓ (如果 sideEffect=irreversible) prefetchBackup → writeBackup；失败即终止

@@ -1,6 +1,6 @@
 // tests/helpers/loadBridgeNormalizers.js
 // ---------------------------------------------------------------------------
-// 通过 vm sandbox 加载 bridges/common.js（纯浏览器代码），从中取出归一化函数。
+// 通过 vm sandbox 加载 lib/composerOptions.js + bridges/common.js（纯浏览器代码），从中取出归一化函数。
 // 这样测试用的就是真实生产代码、零副本（保持单一来源不漂移）。
 //
 // common.js 是顶层函数声明（无 IIFE 包裹），但里面有些函数会引用
@@ -14,13 +14,14 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
+const COMPOSER_OPTS_PATH = path.join(__dirname, '..', '..', 'lib', 'composerOptions.js');
 const COMMON_BRIDGE_PATH = path.join(__dirname, '..', '..', 'bridges', 'common.js');
 
 let _cached = null;
 
 function loadBridgeNormalizers() {
   if (_cached) return _cached;
-  const src = fs.readFileSync(COMMON_BRIDGE_PATH, 'utf8');
+  const src = fs.readFileSync(COMPOSER_OPTS_PATH, 'utf8') + '\n' + fs.readFileSync(COMMON_BRIDGE_PATH, 'utf8');
   const sandbox = {
     window: {},
     document: { querySelector: () => null, querySelectorAll: () => [] },

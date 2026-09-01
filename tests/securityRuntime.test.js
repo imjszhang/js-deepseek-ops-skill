@@ -6,12 +6,12 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { writeAuditEntry, writeBackup } = require('../lib/audit');
+const { writeAuditEntry, writeBackup, sanitizeAuditValue } = require('../lib/audit');
 const { hardenRecordsPermissions } = require('../lib/skillRecordsReadme');
 const { redactGetSessionResult } = require('../lib/redact');
 const { assertAllowedUserSettings, resolveAllowedUserSettingKeys } = require('../lib/settingsPolicy');
 const { hardenToolSchema } = require('../lib/toolSchema');
-const { prefetchShareBackup } = require('../skill.contract');
+const { prefetchShareBackup } = require('../skill.definition');
 const { bridgeRuntime } = require('../skill.entry');
 const { createRunContext } = require('../lib/runContext');
 const { appendHistory } = require('../lib/history');
@@ -51,6 +51,21 @@ test('audit 与 backup 默认脱敏并使用私有权限', () => {
     else process.env.JS_EYES_HOME = oldHome;
     fs.rmSync(temp, { recursive: true, force: true });
   }
+});
+
+test('audit 容忍未指定的 thinking/search 与 chrome.thinkingEnabled', () => {
+  assert.doesNotThrow(() => sanitizeAuditValue({
+    prompt: 'hi',
+    mode: 'expert',
+    thinking: undefined,
+    search: undefined,
+    chromeAfter: { thinkingEnabled: false, searchEnabled: true, modelType: 'expert' },
+    applied: { mode: 'expert' },
+  }));
+  const sanitized = sanitizeAuditValue({ thinking: undefined, prompt: 'secret' });
+  assert.equal(sanitized.thinking.redacted, true);
+  assert.equal(sanitized.thinking.length, 0);
+  assert.equal(sanitized.prompt.redacted, true);
 });
 
 test('已有记录权限会递归收紧，符号链接不会跟随', () => {

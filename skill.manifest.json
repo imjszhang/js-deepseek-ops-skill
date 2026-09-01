@@ -2,9 +2,9 @@
   "manifestVersion": 2,
   "id": "js-deepseek-ops-skill",
   "name": "JS DeepSeek Ops Skill",
-  "version": "0.5.0",
+  "version": "0.7.0",
   "publisher": "imjszhang",
-  "description": "DeepSeek Chat 自动化技能：33 个工具、Skill Runtime V2 清单、最小能力声明、默认脱敏审计与不可逆操作备份",
+  "description": "DeepSeek Chat 自动化技能：33 个工具、Skill Runtime V2 清单、skill-scaffold / definition SSOT、默认脱敏审计与不可逆操作备份",
   "entry": "./skill.entry.js",
   "compatibility": {
     "jsEyes": ">=2.8.5 <3",
@@ -23,6 +23,7 @@
   "capabilities": {
     "browser": [
       "tabs.read",
+      "page.read",
       "navigation",
       "script.execute"
     ],
@@ -182,6 +183,7 @@
       "risk": "read",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -200,6 +202,7 @@
       "risk": "read",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -231,6 +234,7 @@
       "risk": "read",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -279,10 +283,11 @@
     {
       "name": "deepseek_chat_page_state",
       "title": "DeepSeek Ops: Chat Page State",
-      "description": "读取当前 chat 页 UI 状态快照（composer 草稿仅出 length+sha256）",
+      "description": "读取当前 chat 页 UI 状态快照（composer 草稿仅出 length+sha256；另含模式/思考/搜索/附件 chrome）",
       "risk": "read",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -301,6 +306,7 @@
       "risk": "read",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -337,6 +343,7 @@
       "risk": "read",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -390,6 +397,7 @@
       "risk": "read",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -443,6 +451,7 @@
       "risk": "read",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -469,6 +478,7 @@
       "risk": "read",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -527,6 +537,7 @@
       "risk": "read",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -551,6 +562,7 @@
       "risk": "read",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -580,6 +592,7 @@
       "risk": "read",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -604,6 +617,7 @@
       "risk": "read",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -622,6 +636,7 @@
       "risk": "interactive",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -640,6 +655,7 @@
       "risk": "interactive",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -681,6 +697,7 @@
       "risk": "interactive",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -699,6 +716,7 @@
       "risk": "destructive",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -729,6 +747,7 @@
       "risk": "destructive",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -761,6 +780,7 @@
       "risk": "destructive",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -787,6 +807,7 @@
       "risk": "destructive",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -813,6 +834,7 @@
       "risk": "destructive",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -868,6 +890,7 @@
       "risk": "destructive",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -894,6 +917,7 @@
       "risk": "destructive",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -958,6 +982,7 @@
       "risk": "destructive",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -1015,6 +1040,7 @@
       "risk": "destructive",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -1055,10 +1081,11 @@
     {
       "name": "deepseek_dom_send_message",
       "title": "DeepSeek Ops: Send Message via UI (DOM)",
-      "description": "[DESTRUCTIVE,COST] DOM 模式：在 composer 输入并点击发送。在 / 上自动创建可见会话；在已有会话页则追加发言。绕开 bridge PoW 限制。",
+      "description": "[DESTRUCTIVE,COST] DOM 模式：可选先切快速/专家/识图与深度思考/智能搜索，再在 composer 输入并点击发送。未指定控件则保持页面现状。在 / 上自动创建可见会话；在已有会话页则追加发言。",
       "risk": "destructive",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -1071,6 +1098,25 @@
             "description": "要发送的消息文本",
             "minLength": 1,
             "maxLength": 50000
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "default",
+              "expert",
+              "vision"
+            ],
+            "description": "新对话模式：快速/专家/识图；省略则不改页面当前模式",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "thinking": {
+            "type": "boolean",
+            "description": "是否打开深度思考；省略则不改页面当前开关"
+          },
+          "search": {
+            "type": "boolean",
+            "description": "是否打开智能搜索；省略则不改。专家模式显式 true 会失败"
           },
           "waitForFinish": {
             "type": "boolean",
@@ -1103,6 +1149,7 @@
       "risk": "destructive",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -1174,6 +1221,7 @@
       "risk": "destructive",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -1237,6 +1285,7 @@
       "risk": "destructive",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -1255,6 +1304,7 @@
       "risk": "destructive",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -1297,6 +1347,7 @@
       "risk": "destructive",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -1335,6 +1386,7 @@
       "risk": "destructive",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"
@@ -1361,6 +1413,7 @@
       "risk": "administrative",
       "capabilities": [
         "browser.tabs.read",
+        "browser.page.read",
         "browser.navigation",
         "browser.script.execute",
         "filesystem.skillData"

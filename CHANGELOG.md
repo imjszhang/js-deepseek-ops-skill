@@ -2,6 +2,24 @@
 
 本仓库的版本历史与根因索引。SKILL.md 只保留前向规划，所有"已发生"的变更与事故复盘都迁到这里。
 
+## v0.7.0 — 新对话 composer chrome（2026-09-01）
+
+- `chat_page_state` 增加只读 `chrome`：`modelType` / `modelLabel` / `thinkingEnabled` / `searchEnabled` / `attachVisible` / 精简 `models`。
+- `dom_send_message` 可选 `mode`（`default|expert|vision`）、`thinking`、`search`。未指定字段不改页面现状；专家模式显式 `search=true` 回 `search_not_available_in_mode`。
+- CLI：`--mode`；`--thinking`/`--search` 与 `--no-thinking`/`--no-search`。省略 flag 不再把开关当成 false。
+- audit 脱敏对 `thinking: undefined`（未指定开关）不再抛错。
+- 共享逻辑：`lib/composerOptions.js` + `readComposerChrome` / `applyComposerChrome`。home-bridge `0.3.5` → `0.3.6`，chat-bridge `0.3.16` → `0.3.17`。
+- 本期不做：API `create_session`/`completion` 的 `model_type`、DOM 选文件、发送后拨回原模式、`chat_settings_view` 的 `SETTINGS_NOT_FOUND`。
+
+## v0.6.0 — 对齐 js-eyes 2.10.0 skill-scaffold（2026-09-01）
+
+- `@js-eyes/client-sdk` / `config` / `skill-recording` / `runtime-paths` 升到 `^2.10.0`，新增 `@js-eyes/skill-scaffold`。
+- `skill.contract.js` 重命名为 `skill.definition.js`：每个工具自带 `risk` + `capabilities`，导出改用 `createDefinitionEnvelope`；删除 `createOpenClawAdapter`。
+- `skill.entry.js` 用 `createNativeHandlers`，仍保留 scoped storage / 设置 allowlist 桥接。
+- `skill.manifest.json` 由 scaffold `writeSkillManifest` 从 definition 生成；闭合 schema 在 definition 内先硬化。
+- `lib/runContext.js` 改用 `createUrlSkillRunContext`。宿主下限仍为 JS Eyes 2.8.5。
+- 兼容 DeepSeek 2026-09 composer：发送按钮改为 `ds-button--primary` 圆形按钮；`findComposerSendButton` / `findComposerStopButton` 同时认新旧选择器。home-bridge `0.3.4` → `0.3.5`，chat-bridge `0.3.15` → `0.3.16`。
+
 ## v0.5.0 — Skill Runtime V2 与安全收敛（2026-07-22）
 
 - 新增静态 `skill.manifest.json`、`skill.entry.js` 与生成/漂移检查脚本；33 个工具可由

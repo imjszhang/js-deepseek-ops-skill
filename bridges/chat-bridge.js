@@ -38,8 +38,9 @@
 
 (function install() {
   'use strict';
-  const VERSION = '0.3.15';
+  const VERSION = '0.3.17';
 
+  // @@include ../lib/composerOptions.js
   // @@include ./common.js
   // @@include ../lib/sessionTree.js
 
@@ -218,6 +219,7 @@
       pathname: location.pathname,
       title: dom ? dom.titleText : null,
       composer: dom ? dom.composer : { length: 0, sha256: null, present: false },
+      chrome: (dom && dom.chrome) || emptyComposerChrome(),
       streamingDom: !!(dom && dom.streamingDom),
       scrollAtBottom: !!(dom && dom.scrollAtBottom),
       visibleMessageCount: dom ? dom.visibleMessageCount : 0,
@@ -983,6 +985,22 @@
     const beforeUrl = location.href;
     const beforeSid = parseChatSessionId(beforeUrl);
 
+    const parsed = normalizeComposerArgs(args);
+    if (!parsed.ok) return errResult(parsed.error, { raw: parsed.raw });
+    const asserted = assertComposerOptions(parsed.value);
+    if (!asserted.ok) return errResult(asserted.error, { mode: asserted.mode });
+
+    let chromeBefore = null;
+    let chromeAfter = null;
+    let applied = {};
+    if (hasComposerApply(parsed.value)) {
+      const appliedRes = await applyComposerChrome(parsed.value);
+      if (!appliedRes.ok) return appliedRes;
+      chromeBefore = appliedRes.chromeBefore || null;
+      chromeAfter = appliedRes.chrome || null;
+      applied = appliedRes.applied || {};
+    }
+
     const ta = document.querySelector('textarea');
     if (!ta) return errResult('no_composer_textarea', { url: beforeUrl });
 
@@ -1060,6 +1078,9 @@
       finishElapsedMs,
       messageCount: messages ? messages.length : null,
       lastMessage: messages ? messages[messages.length - 1] : null,
+      chromeBefore,
+      chromeAfter: chromeAfter || readComposerChrome(),
+      applied,
       timestamp: new Date().toISOString(),
     });
   }
